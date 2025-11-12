@@ -1,0 +1,28 @@
+{
+  "samples": [
+    {
+      "label": "positive",
+      "modalities": {
+        "text": "user: hello there\nassistant: hi friend",
+        "image": [0.1, 0.2, 0.3],
+        "audio": [0.05, 0.15]
+      }
+    },
+    {
+      "label": "negative",
+      "modalities": {
+        "text": "user: this is a problem\nassistant: working on it",
+        "image": [0.3, 0.1, 0.2],
+        "audio": [0.2, 0.1]
+      }
+    },
+    {
+      "label": "positive",
+      "modalities": {
+        "text": "user: thanks again\nassistant: anytime",
+        "image": [0.12, 0.22, 0.28],
+        "audio": [0.08, 0.11]
+      }
+    }
+  ]
+}

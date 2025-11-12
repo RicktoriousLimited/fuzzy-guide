@@ -59,6 +59,16 @@ php php-app/predict.php --model php-app/storage/model.json \
   --audio "0.3,0.4,0.2"
 ```
 
+## Testing
+
+A lightweight PHPUnit configuration is included for the PHP components. From the repository root run:
+
+```bash
+vendor/bin/phpunit
+```
+
+The suite exercises encoders, fusion, reasoning, storage, the conversation-aware model pipeline, CLI flows, and the web entry point.
+
 ## Project Structure
 
 - `nsctx/`: Python package containing the model, training utilities, and CLI.
