@@ -1,0 +1,16 @@
+{
+    "name": "fuzzy-guide/app",
+    "description": "NSCTX PHP playground",
+    "type": "project",
+    "require": {},
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "NSCTX\\": "php-app/src/NSCTX/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

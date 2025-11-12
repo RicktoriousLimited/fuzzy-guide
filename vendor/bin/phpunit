@@ -1,0 +1,25 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$projectRoot = dirname(__DIR__, 1);
+require $projectRoot . '/autoload.php';
+
+use PHPUnit\TextUI\TestRunner;
+
+$argv = $_SERVER['argv'];
+array_shift($argv);
+$filters = [];
+$configPath = $projectRoot . '/../phpunit.xml';
+foreach ($argv as $index => $argument) {
+    if ($argument === '--filter' && isset($argv[$index + 1])) {
+        $filters[] = $argv[$index + 1];
+    }
+}
+
+$runner = new TestRunner($filters);
+$configFile = realpath($configPath) ?: $configPath;
+$runner->discoverFromConfig($configFile);
+$exitCode = $runner->run();
+exit($exitCode);
