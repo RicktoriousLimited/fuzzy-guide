@@ -1,0 +1,68 @@
+{
+  "samples": [
+    {
+      "label": "apology",
+      "modalities": {
+        "text": "the boy apologized to his friend after breaking the vase",
+        "image": [0.2, 0.1, 0.7, 0.5],
+        "audio": [0.3, 0.4, 0.2]
+      }
+    },
+    {
+      "label": "apology",
+      "modalities": {
+        "text": "the manager wrote an email saying sorry for the delay",
+        "image": [0.15, 0.2, 0.6, 0.45],
+        "audio": [0.22, 0.31, 0.18]
+      }
+    },
+    {
+      "label": "request",
+      "modalities": {
+        "text": "please schedule a meeting with the research team tomorrow",
+        "image": [0.55, 0.4, 0.1, 0.2],
+        "audio": [0.45, 0.25, 0.35]
+      }
+    },
+    {
+      "label": "request",
+      "modalities": {
+        "text": "the assistant asked for additional budget to finish the project",
+        "image": [0.52, 0.35, 0.12, 0.18],
+        "audio": [0.4, 0.3, 0.32]
+      }
+    },
+    {
+      "label": "report",
+      "modalities": {
+        "text": "weather sensors indicate heavy rainfall approaching the coast",
+        "image": [0.3, 0.65, 0.25, 0.35],
+        "audio": [0.12, 0.55, 0.42]
+      }
+    },
+    {
+      "label": "report",
+      "modalities": {
+        "text": "the analyst summarized quarterly earnings for the board",
+        "image": [0.28, 0.62, 0.3, 0.4],
+        "audio": [0.18, 0.5, 0.37]
+      }
+    },
+    {
+      "label": "warning",
+      "modalities": {
+        "text": "alert the crew that the reactor temperature is rising quickly",
+        "image": [0.7, 0.2, 0.15, 0.25],
+        "audio": [0.6, 0.35, 0.28]
+      }
+    },
+    {
+      "label": "warning",
+      "modalities": {
+        "text": "the engineer issued a critical safety notice about the bridge",
+        "image": [0.72, 0.18, 0.2, 0.22],
+        "audio": [0.58, 0.33, 0.3]
+      }
+    }
+  ]
+}

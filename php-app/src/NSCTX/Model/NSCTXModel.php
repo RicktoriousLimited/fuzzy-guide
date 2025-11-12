@@ -1,0 +1,263 @@
+<?php
+
+declare(strict_types=1);
+
+namespace NSCTX\Model;
+
+use DateTimeImmutable;
+use DateTimeInterface;
+use DateTimeZone;
+use NSCTX\Decoder\HubDecoder;
+use NSCTX\Encoder\NumericEncoder;
+use NSCTX\Encoder\TextEncoder;
+use NSCTX\Fusion\CrossModalFusion;
+use NSCTX\Graph\SemanticGraphBuilder;
+use NSCTX\Reasoning\ReasoningEngine;
+use NSCTX\Support\Math;
+use NSCTX\Support\Vector;
+
+final class NSCTXModel
+{
+    private Storage $storage;
+    private TextEncoder $textEncoder;
+    private NumericEncoder $imageEncoder;
+    private NumericEncoder $audioEncoder;
+    private CrossModalFusion $fusion;
+    private SemanticGraphBuilder $graphBuilder;
+    private ReasoningEngine $reasoner;
+    private HubDecoder $decoder;
+
+    /**
+     * @var array<string, mixed>
+     */
+    private array $state;
+
+    public function __construct(Storage $storage, int $embeddingDim = 16)
+    {
+        $this->storage = $storage;
+        $saved = $storage->load();
+        $vocabulary = $saved['vocabulary'] ?? [];
+        $this->textEncoder = new TextEncoder($embeddingDim, $vocabulary);
+        $this->imageEncoder = new NumericEncoder($embeddingDim, 'image');
+        $this->audioEncoder = new NumericEncoder($embeddingDim, 'audio');
+        $this->fusion = new CrossModalFusion();
+        $this->graphBuilder = new SemanticGraphBuilder();
+        $this->reasoner = new ReasoningEngine();
+        $this->decoder = new HubDecoder();
+        $this->state = $saved + [
+            'trained_at' => null,
+            'prototypes' => [],
+            'alpha' => [],
+            'metrics' => null,
+            'vocabulary' => $vocabulary,
+        ];
+    }
+
+    /**
+     * @param array<int, array{label: string, modalities: array<string, mixed>}> $dataset
+     * @return array{train_accuracy: float, test_accuracy: float, trained_at: string, sample_count: int}
+     */
+    public function train(array $dataset, float $trainRatio = 0.8, float $ewcLambda = 0.2): array
+    {
+        if ($dataset === []) {
+            throw new \InvalidArgumentException('Training dataset is empty.');
+        }
+
+        $sampleCount = count($dataset);
+        $trainCount = max(1, (int) floor($sampleCount * $trainRatio));
+        $trainSet = array_slice($dataset, 0, $trainCount);
+        $testSet = array_slice($dataset, $trainCount);
+
+        $this->textEncoder->fit(array_map(
+            static fn (array $item): string => (string) ($item['modalities']['text'] ?? ''),
+            $trainSet
+        ));
+        $this->state['vocabulary'] = $this->textEncoder->getVocabulary();
+
+        $prototypes = [];
+        $alphaAccumulator = [];
+        foreach ($trainSet as $sample) {
+            $encoded = $this->encodeModalities($sample['modalities']);
+            $label = $sample['label'];
+            $prototypes[$label][] = $encoded['hub_state'];
+            foreach ($encoded['modal_weights'] as $name => $weight) {
+                $alphaAccumulator[$name] = ($alphaAccumulator[$name] ?? 0.0) + $weight;
+            }
+        }
+
+        $alpha = [];
+        $modalities = array_keys($alphaAccumulator);
+        if ($modalities !== []) {
+            $counts = [];
+            foreach ($modalities as $name) {
+                $counts[] = $alphaAccumulator[$name];
+            }
+            $normalized = Math::softmax($counts);
+            foreach ($modalities as $index => $name) {
+                $alpha[$name] = $normalized[$index] ?? (1.0 / max(count($modalities), 1));
+            }
+        }
+
+        $oldPrototypes = $this->state['prototypes'] ?? [];
+        $finalPrototypes = [];
+        foreach ($prototypes as $label => $vectors) {
+            $mean = Vector::average($vectors);
+            if (isset($oldPrototypes[$label])) {
+                $finalPrototypes[$label] = $this->elasticCombine($oldPrototypes[$label], $mean, $ewcLambda);
+            } else {
+                $finalPrototypes[$label] = $mean;
+            }
+        }
+
+        $timestamp = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
+        $this->state['trained_at'] = $timestamp;
+        $this->state['prototypes'] = $finalPrototypes;
+        $this->state['alpha'] = $alpha;
+
+        $trainAccuracy = $this->evaluate($trainSet);
+        $testAccuracy = $testSet === [] ? $trainAccuracy : $this->evaluate($testSet);
+
+        $metrics = [
+            'train_accuracy' => $trainAccuracy,
+            'test_accuracy' => $testAccuracy,
+            'trained_at' => $timestamp,
+            'sample_count' => $sampleCount,
+        ];
+        $this->state['metrics'] = $metrics;
+
+        $this->storage->save($this->state);
+
+        return $metrics;
+    }
+
+    /**
+     * @param array<string, mixed> $modalities
+     * @return array{
+     *     prediction: string,
+     *     probabilities: array<string, float>,
+     *     intermediates: array<string, mixed>,
+     *     modal_weights: array<string, float>
+     * }
+     */
+    public function predict(array $modalities): array
+    {
+        $encoded = $this->encodeModalities($modalities, $this->state['alpha'] ?? []);
+        $decoded = $this->decoder->decode($encoded['hub_state'], $this->state['prototypes'] ?? []);
+        return [
+            'prediction' => $decoded['prediction'],
+            'probabilities' => $decoded['probabilities'],
+            'intermediates' => $encoded['intermediates'],
+            'modal_weights' => $encoded['modal_weights'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function getLastMetrics(): ?array
+    {
+        return $this->state['metrics'] ?? null;
+    }
+
+    public function getTrainedAt(): ?string
+    {
+        return $this->state['trained_at'] ?? null;
+    }
+
+    /**
+     * @return array<string, array<int, float>>
+     */
+    public function getPrototypes(): array
+    {
+        return $this->state['prototypes'] ?? [];
+    }
+
+    /**
+     * @return array<string, float>
+     */
+    public function getAlpha(): array
+    {
+        return $this->state['alpha'] ?? [];
+    }
+
+    /**
+     * @param array<int, array{label: string, modalities: array<string, mixed>}> $dataset
+     */
+    private function evaluate(array $dataset): float
+    {
+        if ($dataset === []) {
+            return 0.0;
+        }
+        $correct = 0;
+        foreach ($dataset as $sample) {
+            $prediction = $this->predict($sample['modalities']);
+            if ($prediction['prediction'] === $sample['label']) {
+                $correct++;
+            }
+        }
+        return $correct / count($dataset);
+    }
+
+    /**
+     * @param array<string, mixed> $modalities
+     * @param array<string, float> $alpha
+     * @return array{
+     *     hub_state: array<int, float>,
+     *     intermediates: array<string, mixed>,
+     *     modal_weights: array<string, float>
+     * }
+     */
+    private function encodeModalities(array $modalities, array $alpha = []): array
+    {
+        $text = (string) ($modalities['text'] ?? '');
+        $image = array_map('floatval', $modalities['image'] ?? []);
+        $audio = array_map('floatval', $modalities['audio'] ?? []);
+
+        $textEncoded = $this->textEncoder->encode($text);
+        $imageEncoded = $image === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->imageEncoder->encode($image);
+        $audioEncoded = $audio === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->audioEncoder->encode($audio);
+
+        $modalVectors = [
+            'text' => $textEncoded['contextual'],
+            'image' => $imageEncoded,
+            'audio' => $audioEncoded,
+        ];
+
+        $fusion = $this->fusion->fuse($modalVectors, $alpha);
+        $graph = $this->graphBuilder->build($fusion['fused']);
+        $reason = $this->reasoner->run($graph['nodes']);
+        $hubInput = Vector::add($fusion['fused'], $reason['state']);
+        $hubState = $this->decoder->relay($hubInput, [$fusion['fused'], $reason['state']]);
+
+        return [
+            'hub_state' => $hubState,
+            'modal_weights' => $fusion['weights'],
+            'intermediates' => [
+                'text_tokens' => $textEncoded['embeddings'],
+                'fused' => $fusion['fused'],
+                'graph' => $graph,
+                'reasoning_steps' => $reason['steps'],
+                'hub' => $hubState,
+            ],
+        ];
+    }
+
+    private function getEmbeddingDim(): int
+    {
+        return count($this->state['prototypes'][array_key_first($this->state['prototypes'])] ?? []) ?: 16;
+    }
+
+    /**
+     * @param array<int, float> $old
+     * @param array<int, float> $new
+     */
+    private function elasticCombine(array $old, array $new, float $lambda): array
+    {
+        if ($lambda <= 0.0) {
+            return $new;
+        }
+        $scaledNew = Vector::scale($new, 1.0 / (1.0 + $lambda));
+        $scaledOld = Vector::scale($old, $lambda / (1.0 + $lambda));
+        return Vector::add($scaledNew, $scaledOld);
+    }
+}
