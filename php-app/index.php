@@ -2,257 +2,254 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/knn.php';
+require __DIR__ . '/bootstrap.php';
 
-$model = new KNNModel(
-    __DIR__ . '/storage/model.json',
-    __DIR__ . '/sample_dataset.json'
-);
+use NSCTX\Model\NSCTXModel;
+use NSCTX\Model\Storage;
+
+$model = new NSCTXModel(new Storage(__DIR__ . '/storage/model.json'));
+
+$datasetPath = __DIR__ . '/data/dataset.json';
+$dataset = ['samples' => []];
+if (is_file($datasetPath)) {
+    $raw = file_get_contents($datasetPath);
+    if ($raw !== false) {
+        $dataset = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+    }
+}
+$samples = $dataset['samples'] ?? [];
 
 $message = null;
 $error = null;
 $prediction = null;
+$intermediates = null;
+$modalWeights = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     try {
-        switch ($action) {
-            case 'add-sample':
-                $rawFeatures = trim((string) ($_POST['features'] ?? ''));
-                $label = trim((string) ($_POST['label'] ?? ''));
-                if ($rawFeatures === '') {
-                    throw new InvalidArgumentException('Provide at least one feature.');
-                }
-                $features = array_values(array_filter(array_map('trim', explode(',', $rawFeatures)), static fn ($value) => $value !== ''));
-                $numericFeatures = array_map(
-                    static function (string $value): float {
-                        if (!is_numeric($value)) {
-                            throw new InvalidArgumentException('All features must be numeric.');
-                        }
-                        return (float) $value;
-                    },
-                    $features
-                );
-                $model->addSample($numericFeatures, $label);
-                $message = 'Sample added successfully. Remember to retrain to update the timestamp.';
-                break;
-            case 'update-k':
-                $k = (int) ($_POST['k'] ?? 3);
-                $model->setK($k);
-                $message = sprintf('Updated k to %d.', $k);
-                break;
-            case 'clear-dataset':
-                $model->clearSamples();
-                $message = 'Dataset cleared.';
-                break;
-            case 'reset-defaults':
-                $model->resetToDefault();
-                $message = 'Dataset restored to bundled defaults.';
-                break;
-            case 'train-model':
-                $timestamp = $model->train();
-                $message = sprintf('Model trained at %s.', $timestamp);
-                break;
-            case 'predict':
-                $rawFeatures = trim((string) ($_POST['predict-features'] ?? ''));
-                if ($rawFeatures === '') {
-                    throw new InvalidArgumentException('Enter features to run a prediction.');
-                }
-                $features = array_values(array_filter(array_map('trim', explode(',', $rawFeatures)), static fn ($value) => $value !== ''));
-                $numericFeatures = array_map(
-                    static function (string $value): float {
-                        if (!is_numeric($value)) {
-                            throw new InvalidArgumentException('All features must be numeric.');
-                        }
-                        return (float) $value;
-                    },
-                    $features
-                );
-                $prediction = $model->predict($numericFeatures);
-                $message = 'Prediction complete.';
-                break;
-            default:
-                $error = 'Unknown action requested.';
+        if ($action === 'train') {
+            if ($samples === []) {
+                throw new RuntimeException('Dataset is empty.');
+            }
+            $trainRatio = isset($_POST['train_ratio']) ? (float) $_POST['train_ratio'] : 0.75;
+            $ewc = isset($_POST['ewc']) ? (float) $_POST['ewc'] : 0.2;
+            $metrics = $model->train($samples, $trainRatio, $ewc);
+            $message = sprintf(
+                'Training complete &mdash; train accuracy %.1f%%, test accuracy %.1f%%.',
+                $metrics['train_accuracy'] * 100,
+                $metrics['test_accuracy'] * 100
+            );
+        } elseif ($action === 'predict') {
+            $text = trim((string) ($_POST['text'] ?? ''));
+            $imageRaw = trim((string) ($_POST['image'] ?? ''));
+            $audioRaw = trim((string) ($_POST['audio'] ?? ''));
+            if ($text === '') {
+                throw new InvalidArgumentException('Provide text input for prediction.');
+            }
+            $image = $imageRaw === '' ? [] : array_map('floatval', array_filter(array_map('trim', explode(',', $imageRaw)), static fn ($value) => $value !== ''));
+            $audio = $audioRaw === '' ? [] : array_map('floatval', array_filter(array_map('trim', explode(',', $audioRaw)), static fn ($value) => $value !== ''));
+            $result = $model->predict([
+                'text' => $text,
+                'image' => $image,
+                'audio' => $audio,
+            ]);
+            $prediction = $result['prediction'];
+            $intermediates = $result['intermediates'];
+            $modalWeights = $result['modal_weights'];
+            $message = 'Prediction generated.';
+        } else {
+            $error = 'Unknown action.';
         }
     } catch (Throwable $exception) {
         $error = $exception->getMessage();
     }
 }
 
-$samples = $model->getSamples();
-$featureCount = $samples === [] ? 0 : count($samples[0]['features']);
+$metrics = $model->getLastMetrics();
+$prototypes = $model->getPrototypes();
+$alpha = $model->getAlpha();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>PHP KNN Playground</title>
+    <title>NSCTX PHP Playground</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {
             color-scheme: light dark;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background-color: #f8fafc;
-            color: #0f172a;
+            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
         }
         body {
             margin: 0;
             padding: 2rem;
-            background: linear-gradient(135deg, #eef2ff 0%, #f8fafc 100%);
+            background: radial-gradient(circle at 10% 20%, rgba(37, 99, 235, 0.25), transparent 50%),
+                        radial-gradient(circle at 90% 10%, rgba(16, 185, 129, 0.15), transparent 40%),
+                        #0f172a;
         }
         .container {
-            max-width: 960px;
+            max-width: 1100px;
             margin: 0 auto;
-            background-color: rgba(255, 255, 255, 0.9);
-            border-radius: 1rem;
-            padding: 2rem;
-            box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
+            background-color: rgba(15, 23, 42, 0.85);
+            border-radius: 1.5rem;
+            padding: 2.5rem;
+            box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(12px);
         }
-        h1, h2 {
-            color: #1e293b;
+        h1, h2, h3 {
+            color: #f8fafc;
             margin-top: 0;
+        }
+        p {
+            color: #cbd5f5;
         }
         form {
             margin-bottom: 2rem;
             padding: 1.5rem;
-            border: 1px solid #e2e8f0;
-            border-radius: 0.75rem;
-            background-color: #fff;
+            border-radius: 1rem;
+            background: rgba(30, 41, 59, 0.9);
+            border: 1px solid rgba(148, 163, 184, 0.2);
         }
         label {
             display: block;
             font-weight: 600;
             margin-bottom: 0.5rem;
         }
-        input[type="text"], input[type="number"] {
+        input, textarea {
             width: 100%;
-            padding: 0.75rem;
-            border-radius: 0.5rem;
-            border: 1px solid #cbd5f5;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            padding: 0.85rem;
             font-size: 1rem;
+            background-color: rgba(15, 23, 42, 0.7);
+            color: #f1f5f9;
             box-sizing: border-box;
         }
+        textarea {
+            min-height: 6rem;
+        }
         button {
-            padding: 0.65rem 1.25rem;
-            border-radius: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.75rem;
             border: none;
             cursor: pointer;
             font-weight: 600;
-            background-color: #2563eb;
-            color: #fff;
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #c084fc 100%);
+            color: #0f172a;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         button:hover {
             transform: translateY(-1px);
-            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.25);
+            box-shadow: 0 16px 30px rgba(99, 102, 241, 0.35);
         }
-        .button-secondary {
-            background-color: #64748b;
-        }
-        .stack {
+        .grid {
             display: grid;
-            gap: 1rem;
+            gap: 1.5rem;
         }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-            font-size: 0.95rem;
-        }
-        th, td {
-            padding: 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid #e2e8f0;
+        .grid-2 {
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
         }
         .alert {
-            padding: 1rem;
+            padding: 1rem 1.25rem;
             border-radius: 0.75rem;
             margin-bottom: 1.5rem;
             font-weight: 600;
         }
         .alert-success {
-            background-color: #dcfce7;
-            color: #14532d;
+            background: rgba(16, 185, 129, 0.18);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #bbf7d0;
         }
         .alert-error {
-            background-color: #fee2e2;
-            color: #7f1d1d;
+            background: rgba(239, 68, 68, 0.18);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            color: #fecaca;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            color: #e2e8f0;
+        }
+        th, td {
+            padding: 0.75rem;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+            text-align: left;
         }
         code {
-            font-family: "Fira Code", "Source Code Pro", monospace;
-            font-size: 0.9rem;
+            font-family: 'Fira Code', monospace;
+            background: rgba(15, 23, 42, 0.65);
+            padding: 0.15rem 0.35rem;
+            border-radius: 0.35rem;
+        }
+        .card {
+            padding: 1rem 1.25rem;
+            border-radius: 1rem;
+            background: rgba(30, 41, 59, 0.75);
+            border: 1px solid rgba(148, 163, 184, 0.2);
         }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>PHP KNN Playground</h1>
-    <p>Manage a lightweight k-Nearest Neighbors classifier entirely in PHP. Add training samples, configure the value of <code>k</code>, train to timestamp your configuration, and run predictions directly from this page.</p>
+    <h1>NSCTX PHP Playground</h1>
+    <p>Train and evaluate a PHP implementation of the NSCTX specification. Load the bundled dataset, run elastic-weight constrained training, and inspect reasoning traces from predictions.</p>
 
-    <?php if ($message !== null): ?>
-        <div class="alert alert-success"><?php echo htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
+    <?php if ($message !== null && $error === null): ?>
+        <div class="alert alert-success"><?php echo $message; ?></div>
     <?php endif; ?>
     <?php if ($error !== null): ?>
         <div class="alert alert-error"><?php echo htmlspecialchars($error, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></div>
     <?php endif; ?>
 
     <section>
-        <h2>Model Configuration</h2>
-        <form method="post" class="stack">
-            <input type="hidden" name="action" value="update-k">
-            <label for="k">Number of neighbors (k)</label>
-            <input id="k" type="number" name="k" min="1" required value="<?php echo htmlspecialchars((string) $model->getK(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
-            <button type="submit">Update k</button>
+        <h2>Training</h2>
+        <form method="post" class="grid grid-2">
+            <input type="hidden" name="action" value="train">
+            <div>
+                <label for="train_ratio">Train split (0-1)</label>
+                <input id="train_ratio" type="number" min="0.5" max="0.95" step="0.05" name="train_ratio" value="0.75">
+            </div>
+            <div>
+                <label for="ewc">EWC λ (stability)</label>
+                <input id="ewc" type="number" min="0" max="1" step="0.05" name="ewc" value="0.2">
+            </div>
+            <div style="grid-column: 1 / -1;">
+                <button type="submit">Train model</button>
+            </div>
         </form>
-        <form method="post" class="stack" style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
-            <input type="hidden" name="action" value="train-model">
-            <button type="submit">Train model</button>
-            <span>Last trained: <strong><?php echo htmlspecialchars($model->getTrainedAt() ?? 'Not trained yet', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong></span>
-        </form>
-        <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-            <form method="post">
-                <input type="hidden" name="action" value="clear-dataset">
-                <button type="submit" class="button-secondary">Clear dataset</button>
-            </form>
-            <form method="post">
-                <input type="hidden" name="action" value="reset-defaults">
-                <button type="submit" class="button-secondary">Restore defaults</button>
-            </form>
-        </div>
+        <?php if ($metrics !== null): ?>
+            <div class="card">
+                <h3>Last training run</h3>
+                <p>Samples: <strong><?php echo $metrics['sample_count']; ?></strong></p>
+                <p>Train accuracy: <strong><?php echo number_format($metrics['train_accuracy'] * 100, 2); ?>%</strong></p>
+                <p>Test accuracy: <strong><?php echo number_format($metrics['test_accuracy'] * 100, 2); ?>%</strong></p>
+                <p>Timestamp: <strong><?php echo htmlspecialchars($metrics['trained_at'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong></p>
+            </div>
+        <?php endif; ?>
     </section>
 
     <section>
-        <h2>Add Training Sample</h2>
-        <form method="post" class="stack">
-            <input type="hidden" name="action" value="add-sample">
-            <label for="features">Features (comma-separated numeric values)</label>
-            <input id="features" type="text" name="features" placeholder="e.g. 5.1, 3.5, 1.4, 0.2" required>
-            <label for="label">Label</label>
-            <input id="label" type="text" name="label" placeholder="setosa" required>
-            <button type="submit">Add sample</button>
-        </form>
-    </section>
-
-    <section>
-        <h2>Current Dataset</h2>
-        <p><?php echo count($samples); ?> samples &middot; <?php echo $featureCount; ?> features per sample</p>
-        <?php if ($samples === []): ?>
-            <p>No data yet. Add samples or restore the defaults.</p>
-        <?php else: ?>
+        <h2>Dataset overview</h2>
+        <p><?php echo count($samples); ?> samples across <?php echo count(array_unique(array_map(static fn ($item) => $item['label'], $samples))); ?> labels.</p>
+        <?php if ($samples !== []): ?>
             <table>
                 <thead>
                 <tr>
                     <th>#</th>
-                    <th>Features</th>
                     <th>Label</th>
+                    <th>Text</th>
                 </tr>
                 </thead>
                 <tbody>
                 <?php foreach ($samples as $index => $sample): ?>
                     <tr>
                         <td><?php echo $index + 1; ?></td>
-                        <td><?php echo htmlspecialchars(implode(', ', array_map(static fn ($value) => number_format((float) $value, 3, '.', ''), $sample['features'])), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
                         <td><?php echo htmlspecialchars($sample['label'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
+                        <td><?php echo htmlspecialchars(substr($sample['modalities']['text'], 0, 80), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo strlen($sample['modalities']['text']) > 80 ? '…' : ''; ?></td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -261,45 +258,68 @@ $featureCount = $samples === [] ? 0 : count($samples[0]['features']);
     </section>
 
     <section>
-        <h2>Run Prediction</h2>
-        <form method="post" class="stack">
+        <h2>Predict</h2>
+        <form method="post" class="grid">
             <input type="hidden" name="action" value="predict">
-            <label for="predict-features">Features (comma-separated numeric values)</label>
-            <input id="predict-features" type="text" name="predict-features" placeholder="e.g. 5.0, 3.4, 1.5, 0.2" required>
-            <button type="submit">Predict</button>
+            <label for="text">Text</label>
+            <textarea id="text" name="text" placeholder="Describe the event" required><?php echo htmlspecialchars((string) ($_POST['text'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+            <label for="image">Image embedding (comma-separated floats)</label>
+            <input id="image" type="text" name="image" placeholder="0.5, 0.2, 0.1, 0.3" value="<?php echo htmlspecialchars((string) ($_POST['image'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+            <label for="audio">Audio embedding (comma-separated floats)</label>
+            <input id="audio" type="text" name="audio" placeholder="0.2, 0.4, 0.3" value="<?php echo htmlspecialchars((string) ($_POST['audio'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+            <div>
+                <button type="submit">Run prediction</button>
+            </div>
         </form>
 
-        <?php if ($prediction !== null): ?>
-            <div style="margin-top: 1.5rem;">
-                <h3>Prediction Result</h3>
-                <p><strong>Label:</strong> <?php echo htmlspecialchars($prediction['prediction'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
-                <h4>Class Probabilities</h4>
+        <?php if ($prediction !== null && $intermediates !== null): ?>
+            <div class="card">
+                <h3>Prediction result</h3>
+                <p><strong>Label:</strong> <?php echo htmlspecialchars($prediction, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
+                <h4>Modal weights</h4>
                 <ul>
-                    <?php foreach ($prediction['probabilities'] as $label => $probability): ?>
-                        <li><?php echo htmlspecialchars($label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?> &mdash; <?php echo number_format($probability * 100, 2); ?>%</li>
+                    <?php foreach ($modalWeights as $name => $weight): ?>
+                        <li><?php echo htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>: <?php echo number_format($weight, 3); ?></li>
                     <?php endforeach; ?>
                 </ul>
-                <h4>Nearest Neighbors</h4>
-                <table>
-                    <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Label</th>
-                        <th>Distance</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($prediction['neighbors'] as $index => $neighbor): ?>
-                        <tr>
-                            <td><?php echo $index + 1; ?></td>
-                            <td><?php echo htmlspecialchars($neighbor['label'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
-                            <td><?php echo number_format($neighbor['distance'], 4); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+                <h4>Reasoning trace</h4>
+                <p><strong>Graph nodes:</strong> <?php echo count($intermediates['graph']['nodes']); ?> &middot; <strong>Edges:</strong> <?php echo count($intermediates['graph']['edges']); ?></p>
+                <p><strong>Final hub preview:</strong> [<?php echo implode(', ', array_map(static fn ($value) => number_format($value, 3), array_slice($intermediates['hub'], 0, 5))); ?>]</p>
             </div>
         <?php endif; ?>
+    </section>
+
+    <section>
+        <h2>Model introspection</h2>
+        <div class="grid grid-2">
+            <div class="card">
+                <h3>Prototype vectors</h3>
+                <?php if ($prototypes === []): ?>
+                    <p>No prototypes yet. Train the model.</p>
+                <?php else: ?>
+                    <ul>
+                        <?php foreach ($prototypes as $label => $vector): ?>
+                            <li>
+                                <strong><?php echo htmlspecialchars($label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                &mdash; [<?php echo implode(', ', array_map(static fn ($value) => number_format($value, 3), array_slice($vector, 0, 4))); ?>]
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+            <div class="card">
+                <h3>Modal attention weights</h3>
+                <?php if ($alpha === []): ?>
+                    <p>Weights will appear after training.</p>
+                <?php else: ?>
+                    <ul>
+                        <?php foreach ($alpha as $name => $weight): ?>
+                            <li><?php echo htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>: <?php echo number_format($weight, 3); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+        </div>
     </section>
 </div>
 </body>
