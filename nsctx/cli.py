@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import List
+from typing import List, Sequence, Tuple
 
 import torch
 
 from . import Evaluator, NSCTXModel, Trainer
-from .data import build_demo_dataset
+from .data import build_demo_dataset, conversation_to_text, encode_text
 from .model import NSCTXConfig
 from .training import TrainingConfig
+
+
+ConversationArg = Sequence[Tuple[str, str]]
 
 
 VOCAB: List[str] = [
     "<pad>",
     "<unk>",
+    "<user>",
+    "<assistant>",
     "the",
     "boy",
     "kicked",
@@ -26,14 +32,60 @@ VOCAB: List[str] = [
     "angry",
     "phone",
     "broken",
+    "what",
+    "happened",
+    "in",
+    "game",
+    "did",
+    "play",
+    "again",
+    "why",
+    "everyone",
+    "quiet",
+    "say",
+    "sorry",
+    "to",
+    "his",
+    "friend",
+    "made",
+    "upset",
+    "work",
 ]
+
+
+def _parse_conversation(raw: str | None) -> ConversationArg | None:
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise ValueError("Conversation must be valid JSON.") from exc
+    conversation: List[Tuple[str, str]] = []
+    for item in payload:
+        role = item.get("role")
+        content = item.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            raise ValueError("Conversation entries require 'role' and 'content' strings.")
+        conversation.append((role, content))
+    if not conversation:
+        raise ValueError("Conversation must contain at least one message.")
+    return conversation
 
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NSCTX demo app")
     parser.add_argument("command", choices=["train", "predict"], help="Operation to run")
     parser.add_argument("--model-path", default="nsctx_demo.pt", help="Path to save or load the model")
-    parser.add_argument("--text", default="the boy apologized", help="Input sentence for prediction")
+    parser.add_argument(
+        "--text",
+        default="<user> what happened in the game <assistant> the boy kicked the ball",
+        help="Whitespace separated conversation transcript for prediction",
+    )
+    parser.add_argument(
+        "--conversation",
+        default=None,
+        help="JSON encoded list of {'role': str, 'content': str} messages for prediction",
+    )
     parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
     parser.add_argument("--device", default="cpu", help="Device to use")
     return parser.parse_args()
@@ -64,7 +116,8 @@ def predict(model_path: Path, text: str, device: str) -> None:
     model.load_state_dict(checkpoint["state_dict"])
     evaluator = Evaluator(model, device=device)
     vocab_to_idx = {token: i for i, token in enumerate(VOCAB)}
-    tokens = torch.tensor([[vocab_to_idx.get(tok, vocab_to_idx["<unk>"]) for tok in text.split()]], dtype=torch.long)
+    encoded = encode_text(text, vocab_to_idx)
+    tokens = encoded.unsqueeze(0)
     probs = evaluator.predict(tokens)
     print(f"Predictions for '{text}': {probs.squeeze(0).tolist()}")
 
@@ -75,7 +128,13 @@ def main() -> None:
     if args.command == "train":
         train(model_path, args.epochs, args.device)
     else:
-        predict(model_path, args.text, args.device)
+        conversation = _parse_conversation(args.conversation)
+        if conversation is not None:
+            encoded = conversation_to_text(conversation)
+            text = encoded
+        else:
+            text = args.text
+        predict(model_path, text, args.device)
 
 
 if __name__ == "__main__":  # pragma: no cover
