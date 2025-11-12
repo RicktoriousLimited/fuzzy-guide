@@ -32,9 +32,22 @@ python -m nsctx.cli predict --model-path nsctx_demo.pt --text "the boy apologize
 
 The prediction command prints a three-dimensional probability vector along with optional intermediate representations for inspection.
 
+### PHP KNN Playground
+
+This repository also includes a self-contained PHP web application for experimenting with a k-Nearest Neighbors classifier. The app allows you to manage a dataset, adjust the value of <code>k</code>, trigger a lightweight "training" step (timestamping the configuration), and run predictions—all directly from the browser.
+
+Start the development server from the repository root:
+
+```bash
+php -S localhost:8080 -t php-app
+```
+
+Then visit <http://localhost:8080> to interact with the playground. The app persists state to `php-app/storage/model.json` (ignored by Git) and ships with a small sample dataset inspired by the Iris benchmark.
+
 ## Project Structure
 
 - `nsctx/`: Python package containing the model, training utilities, and CLI.
+- `php-app/`: Standalone PHP web application implementing a simple KNN playground.
 - `Main.txt`: Original mathematical description of NSCTX.
 - `requirements.txt`: Python dependencies for the demo.
 
