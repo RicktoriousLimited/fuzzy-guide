@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import torch
+
+
+ConversationMessage = Tuple[str, str]
 
 
 @dataclass
@@ -33,32 +36,101 @@ class InMemoryDataset(torch.utils.data.Dataset):
         return self._samples[idx]
 
 
-def build_demo_dataset(vocab: Iterable[str]) -> InMemoryDataset:
-    """Construct a simple dataset with toy multi-modal targets.
+def encode_text(text: str, vocab_to_idx: Dict[str, int]) -> torch.Tensor:
+    """Convert a whitespace-tokenised string into tensor indices."""
 
-    The labels are represented as three binary attributes that loosely map to
-    sentiment, responsibility, and physical state cues.
+    indices = [vocab_to_idx.get(tok, vocab_to_idx["<unk>"]) for tok in text.split()]
+    return torch.tensor(indices, dtype=torch.long)
+
+
+def conversation_to_text(messages: Sequence[ConversationMessage]) -> str:
+    """Serialise a list of ``(role, content)`` pairs into a token sequence."""
+
+    parts: List[str] = []
+    for role, content in messages:
+        parts.append(f"<{role.lower()}>")
+        parts.extend(content.strip().split())
+    return " ".join(parts)
+
+
+def build_demo_dataset(vocab: Iterable[str]) -> InMemoryDataset:
+    """Construct a conversation-style dataset with toy multi-modal targets.
+
+    Each sample is represented as a short user/assistant dialogue that maps to
+    the same three binary attributes used in the original single-utterance
+    specification. This keeps the downstream training and reasoning logic the
+    same while presenting the model with conversational context.
     """
 
     vocab_to_idx = {token: i for i, token in enumerate(vocab)}
 
-    def encode_text(text: str) -> torch.Tensor:
-        indices = [vocab_to_idx.get(tok, vocab_to_idx["<unk>"]) for tok in text.split()]
-        return torch.tensor(indices, dtype=torch.long)
+    conversation_specs: List[Tuple[Sequence[ConversationMessage], torch.Tensor]] = [
+        (
+            [
+                ("user", "what happened in the game"),
+                ("assistant", "the boy kicked the ball"),
+            ],
+            torch.tensor([1.0, 0.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "did the boy play again"),
+                ("assistant", "the boy kicked the ball again"),
+            ],
+            torch.tensor([1.0, 0.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "why was everyone quiet"),
+                ("assistant", "the boy apologized"),
+            ],
+            torch.tensor([0.0, 1.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "did the boy say sorry"),
+                ("assistant", "the boy apologized to his friend"),
+            ],
+            torch.tensor([0.0, 1.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "what made the man upset"),
+                ("assistant", "the man was angry"),
+            ],
+            torch.tensor([1.0, 1.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "why was the man angry"),
+                ("assistant", "the man was angry again"),
+            ],
+            torch.tensor([1.0, 1.0, 0.0]),
+        ),
+        (
+            [
+                ("user", "what happened to the phone"),
+                ("assistant", "the phone was broken"),
+            ],
+            torch.tensor([0.0, 0.0, 1.0]),
+        ),
+        (
+            [
+                ("user", "did the phone work again"),
+                ("assistant", "the phone was broken again"),
+            ],
+            torch.tensor([0.0, 0.0, 1.0]),
+        ),
+    ]
 
     samples: List[Sample] = []
-    labels = {
-        "the boy kicked the ball": torch.tensor([1.0, 0.0, 0.0]),
-        "the boy apologized": torch.tensor([0.0, 1.0, 0.0]),
-        "the man was angry": torch.tensor([1.0, 1.0, 0.0]),
-        "the phone was broken": torch.tensor([0.0, 0.0, 1.0]),
-    }
-    for text, label in labels.items():
+    for conversation, label in conversation_specs:
+        text = conversation_to_text(conversation)
         samples.append(
             Sample(
                 text=text,
                 label=label,
-                modalities={"text": encode_text(text)},
+                modalities={"text": encode_text(text, vocab_to_idx)},
             )
         )
     return InMemoryDataset(samples)

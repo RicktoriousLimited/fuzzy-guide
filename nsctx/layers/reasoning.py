@@ -16,7 +16,7 @@ class NeuroSymbolicReasoner(nn.Module):
 
     def forward(self, hub: torch.Tensor) -> torch.Tensor:
         logits = self.decoder(hub)
-        rule_logits = hub @ self.rule_matrix
+        rule_logits = logits @ self.rule_matrix
         return logits + 0.1 * rule_logits
 
     def rule_loss(self, preds: torch.Tensor) -> torch.Tensor:
