@@ -24,6 +24,39 @@ $error = null;
 $prediction = null;
 $intermediates = null;
 $modalWeights = null;
+$conversationInput = (string) ($_POST['text'] ?? '');
+
+/**
+ * @return array<int, array{role: string, content: string}>
+ */
+function parseConversationTurns(string $raw): array
+{
+    $lines = preg_split('/\r?\n/', trim($raw)) ?: [];
+    $turns = [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        if (strpos($line, ':') === false) {
+            $turns[] = [
+                'role' => 'narrator',
+                'content' => $line,
+            ];
+            continue;
+        }
+        [$role, $content] = array_map('trim', explode(':', $line, 2));
+        if ($content === '') {
+            continue;
+        }
+        $turns[] = [
+            'role' => $role === '' ? 'unknown' : strtolower($role),
+            'content' => $content,
+        ];
+    }
+
+    return $turns;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -41,16 +74,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $metrics['test_accuracy'] * 100
             );
         } elseif ($action === 'predict') {
-            $text = trim((string) ($_POST['text'] ?? ''));
+            $conversationInput = trim((string) ($_POST['text'] ?? ''));
             $imageRaw = trim((string) ($_POST['image'] ?? ''));
             $audioRaw = trim((string) ($_POST['audio'] ?? ''));
-            if ($text === '') {
-                throw new InvalidArgumentException('Provide text input for prediction.');
+            if ($conversationInput === '') {
+                throw new InvalidArgumentException('Provide conversation turns for prediction.');
+            }
+            $turns = parseConversationTurns($conversationInput);
+            if ($turns === []) {
+                throw new InvalidArgumentException('Conversation format invalid. Use "role: message" per line.');
             }
             $image = $imageRaw === '' ? [] : array_map('floatval', array_filter(array_map('trim', explode(',', $imageRaw)), static fn ($value) => $value !== ''));
             $audio = $audioRaw === '' ? [] : array_map('floatval', array_filter(array_map('trim', explode(',', $audioRaw)), static fn ($value) => $value !== ''));
             $result = $model->predict([
-                'text' => $text,
+                'text' => $turns,
                 'image' => $image,
                 'audio' => $audio,
             ]);
@@ -241,7 +278,7 @@ $alpha = $model->getAlpha();
                 <tr>
                     <th>#</th>
                     <th>Label</th>
-                    <th>Text</th>
+                    <th>Text / Conversation</th>
                 </tr>
                 </thead>
                 <tbody>
@@ -249,7 +286,17 @@ $alpha = $model->getAlpha();
                     <tr>
                         <td><?php echo $index + 1; ?></td>
                         <td><?php echo htmlspecialchars($sample['label'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></td>
-                        <td><?php echo htmlspecialchars(substr($sample['modalities']['text'], 0, 80), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo strlen($sample['modalities']['text']) > 80 ? '…' : ''; ?></td>
+                        <td>
+                            <?php $textModality = $sample['modalities']['text'] ?? ''; ?>
+                            <?php if (is_array($textModality) && $textModality !== []): ?>
+                                <?php $firstTurn = $textModality[0]; ?>
+                                <?php $preview = sprintf('%s: %s', $firstTurn['role'], $firstTurn['content']); ?>
+                                <?php echo htmlspecialchars(substr($preview, 0, 80), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo strlen($preview) > 80 ? '…' : ''; ?>
+                            <?php else: ?>
+                                <?php $textPreview = (string) $textModality; ?>
+                                <?php echo htmlspecialchars(substr($textPreview, 0, 80), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo strlen($textPreview) > 80 ? '…' : ''; ?>
+                            <?php endif; ?>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -261,8 +308,8 @@ $alpha = $model->getAlpha();
         <h2>Predict</h2>
         <form method="post" class="grid">
             <input type="hidden" name="action" value="predict">
-            <label for="text">Text</label>
-            <textarea id="text" name="text" placeholder="Describe the event" required><?php echo htmlspecialchars((string) ($_POST['text'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+            <label for="text">Conversation turns (one per line as <code>role: message</code>)</label>
+            <textarea id="text" name="text" placeholder="user: describe your observation&#10;assistant: acknowledgement" required><?php echo htmlspecialchars($conversationInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
             <label for="image">Image embedding (comma-separated floats)</label>
             <input id="image" type="text" name="image" placeholder="0.5, 0.2, 0.1, 0.3" value="<?php echo htmlspecialchars((string) ($_POST['image'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
             <label for="audio">Audio embedding (comma-separated floats)</label>
@@ -276,6 +323,8 @@ $alpha = $model->getAlpha();
             <div class="card">
                 <h3>Prediction result</h3>
                 <p><strong>Label:</strong> <?php echo htmlspecialchars($prediction, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
+                <h4>Conversation summary</h4>
+                <pre style="white-space: pre-wrap; background: rgba(15, 23, 42, 0.55); padding: 0.75rem; border-radius: 0.75rem;"><?php echo htmlspecialchars((string) ($intermediates['conversation_summary'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></pre>
                 <h4>Modal weights</h4>
                 <ul>
                     <?php foreach ($modalWeights as $name => $weight): ?>

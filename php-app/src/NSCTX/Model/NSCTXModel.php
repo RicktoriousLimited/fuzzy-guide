@@ -50,6 +50,7 @@ final class NSCTXModel
             'alpha' => [],
             'metrics' => null,
             'vocabulary' => $vocabulary,
+            'speaker_profiles' => $saved['speaker_profiles'] ?? [],
         ];
     }
 
@@ -68,11 +69,24 @@ final class NSCTXModel
         $trainSet = array_slice($dataset, 0, $trainCount);
         $testSet = array_slice($dataset, $trainCount);
 
+        $preparedTexts = array_map(function (array $item): array {
+            $modalities = $item['modalities'] ?? [];
+            return $this->prepareConversationInput($modalities['text'] ?? '');
+        }, $trainSet);
+
         $this->textEncoder->fit(array_map(
-            static fn (array $item): string => (string) ($item['modalities']['text'] ?? ''),
-            $trainSet
+            static fn (array $prepared): string => $prepared['summary'],
+            $preparedTexts
         ));
         $this->state['vocabulary'] = $this->textEncoder->getVocabulary();
+
+        $speakerProfiles = $this->state['speaker_profiles'] ?? [];
+        foreach ($preparedTexts as $prepared) {
+            foreach ($prepared['speakers'] as $role => $count) {
+                $speakerProfiles[$role] = ($speakerProfiles[$role] ?? 0) + $count;
+            }
+        }
+        $this->state['speaker_profiles'] = $speakerProfiles;
 
         $prototypes = [];
         $alphaAccumulator = [];
@@ -209,11 +223,12 @@ final class NSCTXModel
      */
     private function encodeModalities(array $modalities, array $alpha = []): array
     {
-        $text = (string) ($modalities['text'] ?? '');
+        $textData = $this->prepareConversationInput($modalities['text'] ?? '');
+        $text = $textData['summary'];
         $image = array_map('floatval', $modalities['image'] ?? []);
         $audio = array_map('floatval', $modalities['audio'] ?? []);
 
-        $textEncoded = $this->textEncoder->encode($text);
+        $textEncoded = $this->textEncoder->encode($text, $textData['hints']);
         $imageEncoded = $image === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->imageEncoder->encode($image);
         $audioEncoded = $audio === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->audioEncoder->encode($audio);
 
@@ -234,12 +249,99 @@ final class NSCTXModel
             'modal_weights' => $fusion['weights'],
             'intermediates' => [
                 'text_tokens' => $textEncoded['embeddings'],
+                'conversation_summary' => $textData['summary'],
+                'conversation_turns' => $textData['turns'],
                 'fused' => $fusion['fused'],
                 'graph' => $graph,
                 'reasoning_steps' => $reason['steps'],
                 'hub' => $hubState,
             ],
         ];
+    }
+
+    /**
+     * @param mixed $textInput
+     * @return array{
+     *     summary: string,
+     *     hints: array<int, string>,
+     *     turns: array<int, array{role: string, content: string}>,
+     *     speakers: array<string, int>
+     * }
+     */
+    private function prepareConversationInput($textInput): array
+    {
+        $turns = [];
+        if (is_array($textInput)) {
+            foreach ($textInput as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $role = strtolower(trim((string) ($item['role'] ?? 'unknown')));
+                $content = trim((string) ($item['content'] ?? ''));
+                if ($content === '') {
+                    continue;
+                }
+                $turns[] = [
+                    'role' => $role === '' ? 'unknown' : $role,
+                    'content' => $content,
+                ];
+            }
+        }
+
+        if ($turns === []) {
+            $summary = trim((string) $textInput);
+            if ($summary === '') {
+                return [
+                    'summary' => '',
+                    'hints' => [],
+                    'turns' => [],
+                    'speakers' => [],
+                ];
+            }
+            return [
+                'summary' => $summary,
+                'hints' => [],
+                'turns' => [[
+                    'role' => 'narrator',
+                    'content' => $summary,
+                ]],
+                'speakers' => ['narrator' => 1],
+            ];
+        }
+
+        $segments = [];
+        $hints = [];
+        $speakers = [];
+        $tokenIndex = 0;
+        foreach ($turns as $turn) {
+            $role = $turn['role'];
+            $content = $turn['content'];
+            $segments[] = sprintf('%s: %s', $role, $content);
+            $speakers[$role] = ($speakers[$role] ?? 0) + 1;
+            $tokens = $this->basicTokenize($role . ' ' . $content);
+            foreach ($tokens as $_) {
+                $hints[$tokenIndex] = $role;
+                $tokenIndex++;
+            }
+        }
+
+        return [
+            'summary' => implode("\n", $segments),
+            'hints' => $hints,
+            'turns' => $turns,
+            'speakers' => $speakers,
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function basicTokenize(string $text): array
+    {
+        $normalized = strtolower(trim($text));
+        $normalized = preg_replace('/[^a-z0-9\s]/', '', $normalized) ?? $normalized;
+        $tokens = preg_split('/\s+/', $normalized) ?: [];
+        return array_values(array_filter($tokens, static fn (string $token): bool => $token !== ''));
     }
 
     private function getEmbeddingDim(): int

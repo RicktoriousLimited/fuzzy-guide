@@ -45,12 +45,13 @@ final class TextEncoder
     }
 
     /**
+     * @param array<int, string> $speakerHints
      * @return array{
      *     embeddings: array<int, array<int, float>>,
      *     contextual: array<int, float>
      * }
      */
-    public function encode(string $text): array
+    public function encode(string $text, array $speakerHints = []): array
     {
         $tokens = $this->tokenize($text);
         if ($tokens === []) {
@@ -64,7 +65,7 @@ final class TextEncoder
         foreach ($tokens as $index => $token) {
             $base = $this->tokenEmbedding($token);
             $position = $this->positionEmbedding($index);
-            $role = $this->roleEmbedding($token, $index);
+            $role = $this->roleEmbedding($token, $index, $speakerHints[$index] ?? null);
             $embedding = Vector::add(Vector::add($base, $position), $role);
             $tokenEmbeddings[] = $embedding;
         }
@@ -116,12 +117,19 @@ final class TextEncoder
     /**
      * @return array<int, float>
      */
-    private function roleEmbedding(string $token, int $index): array
+    private function roleEmbedding(string $token, int $index, ?string $speakerHint = null): array
     {
         $role = $this->inferRole($token, $index);
         $vector = [];
         for ($i = 0; $i < $this->embeddingDim; $i++) {
             $vector[$i] = Hasher::float('role:' . $role . ':' . $i, 0.5);
+        }
+        if ($speakerHint !== null) {
+            $speakerVector = [];
+            for ($i = 0; $i < $this->embeddingDim; $i++) {
+                $speakerVector[$i] = Hasher::float('speaker:' . $speakerHint . ':' . $i, 0.45);
+            }
+            $vector = Vector::add($vector, $speakerVector);
         }
         return $vector;
     }
