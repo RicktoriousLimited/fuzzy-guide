@@ -232,8 +232,18 @@ $alpha = $model->getAlpha();
 </head>
 <body>
 <div class="container">
-    <h1>NSCTX PHP Playground</h1>
-    <p>Train and evaluate a PHP implementation of the NSCTX specification. Load the bundled dataset, run elastic-weight constrained training, and inspect reasoning traces from predictions.</p>
+    <h1>NSCTX Conversation Playground</h1>
+    <p>Explore a conversational variant of the NSCTX reference model. Fine-tune on the bundled multi-turn dataset, understand how each modality contributes, and inspect the reasoning trace that produces the final label.</p>
+
+    <div class="card" style="margin-bottom: 2rem;">
+        <h3>How conversation predictions work</h3>
+        <ul>
+            <li>Provide turns as <code>role: message</code> pairs, one per line.</li>
+            <li>Optionally enrich predictions with comma-separated embeddings for the image and audio modalities.</li>
+            <li>Run a prediction to see the conversation summary, modal attention weights, and graph reasoning statistics.</li>
+        </ul>
+        <p style="margin-top: 1rem; font-size: 0.95rem; color: #94a3b8;">Tip: use consistent role names such as <em>system</em>, <em>user</em>, and <em>assistant</em> to match the dataset conventions.</p>
+    </div>
 
     <?php if ($message !== null && $error === null): ?>
         <div class="alert alert-success"><?php echo $message; ?></div>
@@ -271,7 +281,7 @@ $alpha = $model->getAlpha();
 
     <section>
         <h2>Dataset overview</h2>
-        <p><?php echo count($samples); ?> samples across <?php echo count(array_unique(array_map(static fn ($item) => $item['label'], $samples))); ?> labels.</p>
+        <p><?php echo count($samples); ?> annotated conversations across <?php echo count(array_unique(array_map(static fn ($item) => $item['label'], $samples))); ?> intent labels.</p>
         <?php if ($samples !== []): ?>
             <table>
                 <thead>
@@ -309,7 +319,7 @@ $alpha = $model->getAlpha();
         <form method="post" class="grid">
             <input type="hidden" name="action" value="predict">
             <label for="text">Conversation turns (one per line as <code>role: message</code>)</label>
-            <textarea id="text" name="text" placeholder="user: describe your observation&#10;assistant: acknowledgement" required><?php echo htmlspecialchars($conversationInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+            <textarea id="text" name="text" placeholder="system: You are the NSCTX assistant.&#10;user: describe your observation&#10;assistant: acknowledgement" required><?php echo htmlspecialchars($conversationInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
             <label for="image">Image embedding (comma-separated floats)</label>
             <input id="image" type="text" name="image" placeholder="0.5, 0.2, 0.1, 0.3" value="<?php echo htmlspecialchars((string) ($_POST['image'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
             <label for="audio">Audio embedding (comma-separated floats)</label>
