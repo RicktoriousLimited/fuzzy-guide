@@ -18,6 +18,8 @@ use NSCTX\Support\Vector;
 
 final class NSCTXModel
 {
+    private const MEMORY_LIMIT = 32;
+
     private Storage $storage;
     private TextEncoder $textEncoder;
     private NumericEncoder $imageEncoder;
@@ -51,6 +53,95 @@ final class NSCTXModel
             'metrics' => null,
             'vocabulary' => $vocabulary,
             'speaker_profiles' => $saved['speaker_profiles'] ?? [],
+            'memory_bank' => $saved['memory_bank'] ?? [],
+        ];
+    }
+
+    /**
+     * Store an unlabeled passage inside the chatbot memory bank.
+     *
+     * @return array<string, mixed>
+     */
+    public function learnFromPassage(string $passage): array
+    {
+        $prepared = $this->prepareConversationInput($passage);
+        if ($prepared['summary'] === '') {
+            throw new \InvalidArgumentException('Provide a non-empty passage for learning.');
+        }
+
+        $this->textEncoder->fit([$prepared['summary']]);
+        $this->state['vocabulary'] = $this->textEncoder->getVocabulary();
+
+        $encoded = $this->textEncoder->encode($prepared['summary'], $prepared['hints']);
+        $entry = [
+            'id' => substr(hash('sha1', $prepared['summary'] . microtime(true)), 0, 12),
+            'summary' => $prepared['summary'],
+            'vector' => $encoded['contextual'],
+            'turns' => $prepared['turns'],
+            'speakers' => $prepared['speakers'],
+            'timestamp' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM),
+        ];
+
+        $memory = $this->state['memory_bank'] ?? [];
+        $memory[] = $entry;
+        if (count($memory) > self::MEMORY_LIMIT) {
+            $memory = array_slice($memory, -self::MEMORY_LIMIT);
+        }
+        $this->state['memory_bank'] = $memory;
+        $this->storage->save($this->state);
+
+        return $entry;
+    }
+
+    /**
+     * @param array<int, array{role: string, content: string}>|string $conversation
+     * @return array{
+     *     response: string,
+     *     match_score: float,
+     *     memory: array<string, mixed>|null,
+     *     conversation: array<string, mixed>
+     * }
+     */
+    public function chat($conversation): array
+    {
+        $prepared = $this->prepareConversationInput($conversation);
+        if ($prepared['summary'] === '') {
+            throw new \InvalidArgumentException('Conversation content missing.');
+        }
+
+        $encoded = $this->textEncoder->encode($prepared['summary'], $prepared['hints']);
+        $memoryBank = $this->state['memory_bank'] ?? [];
+
+        $best = null;
+        $bestScore = 0.0;
+        foreach ($memoryBank as $entry) {
+            $score = Math::cosine($encoded['contextual'], $entry['vector']);
+            if ($best === null || $score > $bestScore) {
+                $best = $entry;
+                $bestScore = $score;
+            }
+        }
+
+        if ($best === null || $bestScore < 0.05) {
+            return [
+                'response' => 'I am still learning, but here is my interpretation: ' . $prepared['summary'],
+                'match_score' => 0.0,
+                'memory' => null,
+                'conversation' => $prepared,
+            ];
+        }
+
+        $response = sprintf(
+            'Drawing from prior knowledge (score %.2f): %s',
+            $bestScore,
+            $best['summary']
+        );
+
+        return [
+            'response' => $response,
+            'match_score' => $bestScore,
+            'memory' => $best,
+            'conversation' => $prepared,
         ];
     }
 
@@ -192,6 +283,14 @@ final class NSCTXModel
     public function getAlpha(): array
     {
         return $this->state['alpha'] ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function getMemoryBank(): array
+    {
+        return $this->state['memory_bank'] ?? [];
     }
 
     /**

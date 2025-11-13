@@ -71,6 +71,51 @@ final class IndexTest extends TestCase
         $this->assertStringContainsString('Conversation summary', $output ?: '');
     }
 
+    public function testTeachActionPersistsMemory(): void
+    {
+        $config = [
+            'method' => 'POST',
+            'post' => [
+                'action' => 'teach',
+                'passage' => 'Research logs describe the coral reef survey in detail.',
+            ],
+            'output' => $this->createTempFilePath(),
+        ];
+
+        $this->runIndex($config);
+        $output = file_get_contents($config['output']);
+        $this->assertStringContainsString('Passage learned', $output ?: '');
+        $this->assertStringContainsString('Memory bank', $output ?: '');
+    }
+
+    public function testChatActionProducesResponseFromMemory(): void
+    {
+        // teach the chatbot first so memory exists
+        $teachConfig = [
+            'method' => 'POST',
+            'post' => [
+                'action' => 'teach',
+                'passage' => 'The observatory detected a comet near Jupiter.',
+            ],
+            'output' => $this->createTempFilePath(),
+        ];
+        $this->runIndex($teachConfig);
+
+        $chatConfig = [
+            'method' => 'POST',
+            'post' => [
+                'action' => 'chat',
+                'chat_text' => 'user: remind me what the observatory saw',
+            ],
+            'output' => $this->createTempFilePath(),
+        ];
+
+        $this->runIndex($chatConfig);
+        $output = file_get_contents($chatConfig['output']);
+        $this->assertStringContainsString('Chat response', $output ?: '');
+        $this->assertStringContainsString('Matched memory', $output ?: '');
+    }
+
     private function trainModelFixture(): void
     {
         $storage = new Storage($this->storagePath);

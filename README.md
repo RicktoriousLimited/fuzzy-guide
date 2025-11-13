@@ -36,6 +36,12 @@ The prediction command prints a three-dimensional probability vector along with 
 
 The repository now includes a full PHP port of the NSCTX demo. The PHP stack mirrors the mathematical specification and exposes both a browser interface and CLI utilities for training, testing, and reasoning inspection.
 
+Alongside the classifier playground you can now convert NSCTX into a lightweight chatbot:
+
+- **Teach** the model new passages without labels through the "Teach the chatbot" form. Each passage is embedded and stored in a retrieval memory bank.
+- **Chat** by providing multi-turn dialogue. The chatbot embeds the conversation, retrieves the most similar learned passage, and produces a grounded response with the similarity score.
+- Inspect the current memory entries from the "Memory bank" panel to verify what the assistant has absorbed.
+
 Start the development server from the repository root:
 
 ```bash

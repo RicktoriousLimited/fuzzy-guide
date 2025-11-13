@@ -25,6 +25,10 @@ $prediction = null;
 $intermediates = null;
 $modalWeights = null;
 $conversationInput = (string) ($_POST['text'] ?? '');
+$chatInput = (string) ($_POST['chat_text'] ?? '');
+$passageInput = (string) ($_POST['passage'] ?? '');
+$chatResult = null;
+$learnedMemory = null;
 
 /**
  * @return array<int, array{role: string, content: string}>
@@ -95,6 +99,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $intermediates = $result['intermediates'];
             $modalWeights = $result['modal_weights'];
             $message = 'Prediction generated.';
+        } elseif ($action === 'teach') {
+            $passageInput = trim((string) ($_POST['passage'] ?? ''));
+            if ($passageInput === '') {
+                throw new InvalidArgumentException('Provide a passage so the chatbot can learn.');
+            }
+            $learnedMemory = $model->learnFromPassage($passageInput);
+            $message = 'Passage learned for unsupervised memory.';
+        } elseif ($action === 'chat') {
+            $chatInput = trim((string) ($_POST['chat_text'] ?? ''));
+            if ($chatInput === '') {
+                throw new InvalidArgumentException('Provide a conversation to generate a reply.');
+            }
+            $chatTurns = parseConversationTurns($chatInput);
+            $chatPayload = $chatTurns === [] ? $chatInput : $chatTurns;
+            $chatResult = $model->chat($chatPayload);
+            $message = 'Chat response generated.';
         } else {
             $error = 'Unknown action.';
         }
@@ -106,6 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $metrics = $model->getLastMetrics();
 $prototypes = $model->getPrototypes();
 $alpha = $model->getAlpha();
+$memoryBank = $model->getMemoryBank();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -315,6 +336,50 @@ $alpha = $model->getAlpha();
     </section>
 
     <section>
+        <h2>Teach the chatbot</h2>
+        <p>Paste any passage or transcript and NSCTX will store it in its unsupervised memory bank.</p>
+        <form method="post" class="grid">
+            <input type="hidden" name="action" value="teach">
+            <label for="passage">Passage</label>
+            <textarea id="passage" name="passage" placeholder="A log entry, article paragraph, or conversation snippet" required><?php echo htmlspecialchars($passageInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+            <div>
+                <button type="submit">Learn passage</button>
+            </div>
+        </form>
+        <?php if ($learnedMemory !== null): ?>
+            <div class="card">
+                <h3>Latest memory</h3>
+                <p><strong>Timestamp:</strong> <?php echo htmlspecialchars($learnedMemory['timestamp'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
+                <pre style="white-space: pre-wrap; background: rgba(15, 23, 42, 0.55); padding: 0.75rem; border-radius: 0.75rem;"><?php echo htmlspecialchars($learnedMemory['summary'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></pre>
+            </div>
+        <?php endif; ?>
+    </section>
+
+    <section>
+        <h2>Chat with NSCTX</h2>
+        <p>Supply multi-turn dialogue for a retrieval-style reply grounded in the learned passages.</p>
+        <form method="post" class="grid">
+            <input type="hidden" name="action" value="chat">
+            <label for="chat_text">Conversation turns</label>
+            <textarea id="chat_text" name="chat_text" placeholder="user: remind me what the observatory discovered&#10;assistant: ..." required><?php echo htmlspecialchars($chatInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></textarea>
+            <div>
+                <button type="submit">Generate reply</button>
+            </div>
+        </form>
+        <?php if ($chatResult !== null): ?>
+            <div class="card">
+                <h3>Chat response</h3>
+                <p><?php echo htmlspecialchars($chatResult['response'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></p>
+                <p><strong>Match score:</strong> <?php echo number_format($chatResult['match_score'], 3); ?></p>
+                <?php if ($chatResult['memory'] !== null): ?>
+                    <p><strong>Matched memory:</strong></p>
+                    <pre style="white-space: pre-wrap; background: rgba(15, 23, 42, 0.55); padding: 0.75rem; border-radius: 0.75rem;"><?php echo htmlspecialchars($chatResult['memory']['summary'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></pre>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+    </section>
+
+    <section>
         <h2>Predict</h2>
         <form method="post" class="grid">
             <input type="hidden" name="action" value="predict">
@@ -374,6 +439,21 @@ $alpha = $model->getAlpha();
                     <ul>
                         <?php foreach ($alpha as $name => $weight): ?>
                             <li><?php echo htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>: <?php echo number_format($weight, 3); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+            <div class="card" style="grid-column: 1 / -1;">
+                <h3>Memory bank</h3>
+                <?php if ($memoryBank === []): ?>
+                    <p>The chatbot has not learned any passages yet.</p>
+                <?php else: ?>
+                    <ul>
+                        <?php foreach (array_reverse($memoryBank) as $entry): ?>
+                            <li>
+                                <strong><?php echo htmlspecialchars($entry['timestamp'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></strong>
+                                &mdash; <?php echo htmlspecialchars(substr($entry['summary'], 0, 90), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?><?php echo strlen($entry['summary']) > 90 ? '…' : ''; ?>
+                            </li>
                         <?php endforeach; ?>
                     </ul>
                 <?php endif; ?>
