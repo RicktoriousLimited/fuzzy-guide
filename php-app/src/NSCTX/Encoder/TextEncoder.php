@@ -23,6 +23,11 @@ final class TextEncoder
         $this->vocabulary = $vocabulary;
     }
 
+    public function getDimension(): int
+    {
+        return $this->embeddingDim;
+    }
+
     /**
      * @param array<int, string> $texts
      */
