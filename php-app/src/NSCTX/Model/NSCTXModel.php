@@ -19,6 +19,21 @@ use NSCTX\Support\Vector;
 final class NSCTXModel
 {
     private const MEMORY_LIMIT = 32;
+    private const WORD_REPLACEMENTS = [
+        '/\bdetected\b/i' => 'documented',
+        '/\bfound\b/i' => 'identified',
+        '/\bpassing\b/i' => 'sweeping past',
+        '/\bnear\b/i' => 'nearby',
+        '/\bbright\b/i' => 'brilliant',
+        '/hydrat/i' => 'water-rich',
+        '/\bcomet\b/i' => 'cometary body',
+        '/\bminerals\b/i' => 'mineral deposits',
+        '/\bobservatory\b/i' => 'the observatory team',
+        '/\brover\b/i' => 'the rover unit',
+        '/\bconfirm\w*/i' => 'verify',
+        '/\bjupiter\b/i' => 'Jupiter',
+        '/\bmars\b/i' => 'Mars',
+    ];
 
     private Storage $storage;
     private TextEncoder $textEncoder;
@@ -122,25 +137,21 @@ final class NSCTXModel
             }
         }
 
-        if ($best === null || $bestScore < 0.05) {
-            return [
-                'response' => 'I am still learning, but here is my interpretation: ' . $prepared['summary'],
-                'match_score' => 0.0,
-                'memory' => null,
-                'conversation' => $prepared,
-            ];
-        }
+        $latestUserIntent = $this->extractLatestUserIntent($prepared['turns'], $prepared['summary']);
+        $memory = ($best !== null && $bestScore >= 0.05) ? $best : null;
+        $score = $memory !== null ? $bestScore : 0.0;
 
-        $response = sprintf(
-            'Drawing from prior knowledge (score %.2f): %s',
-            $bestScore,
-            $best['summary']
+        $response = $this->composeConversationalResponse(
+            $latestUserIntent,
+            $memory,
+            $score,
+            $prepared
         );
 
         return [
             'response' => $response,
-            'match_score' => $bestScore,
-            'memory' => $best,
+            'match_score' => $score,
+            'memory' => $memory,
             'conversation' => $prepared,
         ];
     }
@@ -446,6 +457,256 @@ final class NSCTXModel
     private function getEmbeddingDim(): int
     {
         return count($this->state['prototypes'][array_key_first($this->state['prototypes'])] ?? []) ?: 16;
+    }
+
+    /**
+     * @param array<int, array{role: string, content: string}> $turns
+     */
+    private function extractLatestUserIntent(array $turns, string $fallback): string
+    {
+        for ($index = count($turns) - 1; $index >= 0; $index--) {
+            $turn = $turns[$index];
+            if (strtolower($turn['role']) === 'user' && trim($turn['content']) !== '') {
+                return $this->truncateIntent($turn['content']);
+            }
+        }
+
+        if ($turns !== []) {
+            $lastTurn = $turns[count($turns) - 1];
+            if (trim($lastTurn['content']) !== '') {
+                return $this->truncateIntent($lastTurn['content']);
+            }
+        }
+
+        return $this->truncateIntent($fallback);
+    }
+
+    /**
+     * @param array<string, mixed> $conversation
+     * @param array<string, mixed>|null $memory
+     */
+    private function composeConversationalResponse(
+        string $latestUserIntent,
+        ?array $memory,
+        float $score,
+        array $conversation
+    ): string {
+        $acknowledgement = $this->craftIntentAcknowledgement($latestUserIntent);
+
+        if ($memory === null) {
+            $interpretation = $this->craftInterpretationWithoutMemory($conversation['summary']);
+
+            return trim($acknowledgement . ' ' . $interpretation);
+        }
+
+        $narrative = $this->craftMemorySupportedNarrative($memory['summary']);
+        $referenceLine = $this->buildMemoryReferenceLine($memory, $score);
+
+        return trim($acknowledgement . ' ' . $narrative . ' ' . $referenceLine);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function extractInsightsFromSummary(string $summary): array
+    {
+        $lines = preg_split('/\R+/', $summary) ?: [];
+        $insights = [];
+
+        foreach ($lines as $line) {
+            $stripped = preg_replace('/^[a-z0-9_-]+:\s*/i', '', trim($line)) ?? '';
+            if ($stripped === '') {
+                continue;
+            }
+
+            $sentences = preg_split('/(?<=[.!?])\s+/', $stripped) ?: [$stripped];
+            foreach ($sentences as $sentence) {
+                $clean = trim($sentence);
+                if ($clean === '') {
+                    continue;
+                }
+
+                $insights[] = $this->ensureSentence($clean);
+                if (count($insights) >= 3) {
+                    break 2;
+                }
+            }
+        }
+
+        return $insights;
+    }
+
+    /**
+     * @param array<int, string> $insights
+     */
+    private function buildInsightText(array $insights): string
+    {
+        if ($insights === []) {
+            return '';
+        }
+
+        if (count($insights) === 1) {
+            return $insights[0];
+        }
+
+        $last = array_pop($insights);
+        $body = implode(' ', array_map('trim', $insights));
+
+        return trim($body) . ' Also, ' . $last;
+    }
+
+    private function ensureSentence(string $text): string
+    {
+        $trimmed = trim($text);
+        if ($trimmed === '') {
+            return '';
+        }
+
+        $trimmed = rtrim($trimmed, '.!?');
+        if (function_exists('mb_substr')) {
+            $firstChar = mb_substr($trimmed, 0, 1);
+            $rest = mb_substr($trimmed, 1);
+        } else {
+            $firstChar = substr($trimmed, 0, 1);
+            $rest = substr($trimmed, 1);
+        }
+
+        $capitalized = strtoupper($firstChar) . $rest;
+
+        return rtrim($capitalized) . '.';
+    }
+
+    private function craftIntentAcknowledgement(string $latestUserIntent): string
+    {
+        $clean = trim($latestUserIntent);
+        if ($clean === '') {
+            return 'I am fully focused on your request.';
+        }
+
+        if (preg_match('/\?$/', $clean) === 1) {
+            return sprintf('You are asking: %s', rtrim($clean));
+        }
+
+        return 'You are asking me to: ' . $this->ensureSentence($clean);
+    }
+
+    private function craftInterpretationWithoutMemory(string $conversationSummary): string
+    {
+        $interpretation = $this->paraphraseSummary($conversationSummary);
+        if ($interpretation === '') {
+            $interpretation = 'I will reason through the idea with you.';
+        }
+
+        return $interpretation . ' Tell me more if you would like me to capture additional detail for my archive, as I do not have a saved note on this yet.';
+    }
+
+    private function craftMemorySupportedNarrative(string $memorySummary): string
+    {
+        $narrative = $this->paraphraseSummary($memorySummary);
+        if ($narrative === '') {
+            $narrative = 'I can revisit that archived topic with you in detail.';
+        }
+
+        return $narrative;
+    }
+
+    /**
+     * @param array<string, mixed> $memory
+     */
+    private function buildMemoryReferenceLine(array $memory, float $score): string
+    {
+        $timestamp = $memory['timestamp'] ?? null;
+        $when = 'earlier';
+        if (is_string($timestamp)) {
+            try {
+                $date = new DateTimeImmutable($timestamp);
+                $when = 'on ' . $date->format('F j, Y H:i T');
+            } catch (\Exception $exception) {
+                $when = 'earlier';
+            }
+        }
+
+        $speakerCounts = $memory['speakers'] ?? [];
+        $totalSpeakers = 0;
+        foreach ($speakerCounts as $count) {
+            $totalSpeakers += (int) $count;
+        }
+
+        if ($totalSpeakers <= 0) {
+            $speakerText = 'a note';
+        } elseif ($totalSpeakers === 1) {
+            $speakerText = 'a single-speaker note';
+        } else {
+            $speakerText = sprintf('a %d-speaker note', $totalSpeakers);
+        }
+
+        return sprintf(
+            'That perspective comes from %s I archived %s (confidence %.2f).',
+            $speakerText,
+            $when,
+            $score
+        );
+    }
+
+    private function paraphraseSummary(string $summary): string
+    {
+        $insights = $this->extractInsightsFromSummary($summary);
+        if ($insights === []) {
+            return '';
+        }
+
+        $lines = [];
+        foreach ($insights as $insight) {
+            $line = $this->paraphraseSentence($insight);
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+            if (count($lines) >= 2) {
+                break;
+            }
+        }
+
+        return trim(implode(' ', $lines));
+    }
+
+    private function paraphraseSentence(string $sentence): string
+    {
+        $clean = trim($sentence);
+        if ($clean === '') {
+            return '';
+        }
+
+        $lowered = strtolower($clean);
+        $lowered = $this->applyWordReplacements($lowered);
+        $lowered = preg_replace('/\s+/', ' ', $lowered) ?? $lowered;
+
+        return $this->ensureSentence($lowered);
+    }
+
+    private function applyWordReplacements(string $text): string
+    {
+        $result = $text;
+        foreach (self::WORD_REPLACEMENTS as $pattern => $replacement) {
+            $result = preg_replace($pattern, $replacement, $result) ?? $result;
+        }
+
+        return $result;
+    }
+
+    private function truncateIntent(string $text): string
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return '';
+        }
+
+        $length = function_exists('mb_strlen') ? mb_strlen($text) : strlen($text);
+        if ($length <= 200) {
+            return $text;
+        }
+
+        $snippet = function_exists('mb_substr') ? mb_substr($text, 0, 197) : substr($text, 0, 197);
+        return rtrim($snippet) . '...';
     }
 
     /**
