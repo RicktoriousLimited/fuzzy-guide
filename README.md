@@ -59,6 +59,16 @@ Run the PHP training pipeline from the command line:
 php php-app/train.php --dataset php-app/data/dataset.json --model php-app/storage/model.json
 ```
 
+Trigger the continual self-learning transfer pass, which blends the base dataset with the adaptation split and reports
+retention metrics:
+
+```bash
+php php-app/transfer.php \
+  --model php-app/storage/model.json \
+  --base php-app/data/dataset.json \
+  --adapt php-app/data/adaptation.json
+```
+
 Make a prediction with the trained model:
 
 ```bash
@@ -84,6 +94,7 @@ The suite exercises encoders, fusion, reasoning, storage, the conversation-aware
 - `php-app/`: Standalone PHP web application implementing the NSCTX playground and CLI tooling.
 - `Main.txt`: Original mathematical description of NSCTX.
 - `requirements.txt`: Python dependencies for the demo.
+- `php-app/data/adaptation.json`: Small scenario used by the transfer-learning helper.
 
 ## Notes
 

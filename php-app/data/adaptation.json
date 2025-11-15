@@ -1,0 +1,36 @@
+{
+  "samples": [
+    {
+      "label": "rescue",
+      "modalities": {
+        "text": "The rescue crew stabilized the rover pilot after an engine failure in the canyon.",
+        "image": [0.6, 0.3, 0.4, 0.1],
+        "audio": [0.3, 0.2, 0.4]
+      }
+    },
+    {
+      "label": "rescue",
+      "modalities": {
+        "text": "Medics triaged the injured botanist and shared telemetry with mission control.",
+        "image": [0.4, 0.2, 0.5, 0.2],
+        "audio": [0.2, 0.4, 0.3]
+      }
+    },
+    {
+      "label": "celebration",
+      "modalities": {
+        "text": "The crew gathered to celebrate the clean energy array coming back online at dawn.",
+        "image": [0.1, 0.5, 0.7, 0.2],
+        "audio": [0.6, 0.4, 0.3]
+      }
+    },
+    {
+      "label": "celebration",
+      "modalities": {
+        "text": "Engineers applauded as the observatory broadcast a successful alignment recap.",
+        "image": [0.2, 0.6, 0.5, 0.2],
+        "audio": [0.5, 0.4, 0.2]
+      }
+    }
+  ]
+}

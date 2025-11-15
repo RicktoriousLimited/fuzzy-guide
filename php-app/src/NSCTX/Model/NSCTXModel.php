@@ -171,89 +171,64 @@ final class NSCTXModel
             throw new \InvalidArgumentException('Training dataset is empty.');
         }
 
-        $sampleCount = count($dataset);
-        $trainCount = max(1, (int) floor($sampleCount * $trainRatio));
-        $trainSet = array_slice($dataset, 0, $trainCount);
-        $testSet = array_slice($dataset, $trainCount);
-
-        $preparedTexts = array_map(function (array $item): array {
-            $modalities = $item['modalities'] ?? [];
-            return $this->prepareConversationInput($modalities['text'] ?? '');
-        }, $trainSet);
-
-        $this->textEncoder->fit(array_map(
-            static fn (array $prepared): string => $prepared['summary'],
-            $preparedTexts
-        ));
-        $this->state['vocabulary'] = $this->textEncoder->getVocabulary();
-
-        $speakerProfiles = $this->state['speaker_profiles'] ?? [];
-        foreach ($preparedTexts as $prepared) {
-            foreach ($prepared['speakers'] as $role => $count) {
-                $speakerProfiles[$role] = ($speakerProfiles[$role] ?? 0) + $count;
-            }
-        }
-        $this->state['speaker_profiles'] = $speakerProfiles;
-
-        $prototypes = [];
-        $alphaAccumulator = [];
-        $featureVectors = [];
-        $labelSequence = [];
-        foreach ($trainSet as $sample) {
-            $encoded = $this->encodeModalities($sample['modalities']);
-            $label = $sample['label'];
-            $prototypes[$label][] = $encoded['hub_state'];
-            $featureVectors[] = $encoded['hub_state'];
-            $labelSequence[] = $label;
-            foreach ($encoded['modal_weights'] as $name => $weight) {
-                $alphaAccumulator[$name] = ($alphaAccumulator[$name] ?? 0.0) + $weight;
-            }
-        }
-
-        $labelIndex = $this->buildLabelIndex($labelSequence);
-        $this->state['label_index'] = $labelIndex;
-
-        $alpha = [];
-        $modalities = array_keys($alphaAccumulator);
-        if ($modalities !== []) {
-            $counts = [];
-            foreach ($modalities as $name) {
-                $counts[] = $alphaAccumulator[$name];
-            }
-            $normalized = Math::softmax($counts);
-            foreach ($modalities as $index => $name) {
-                $alpha[$name] = $normalized[$index] ?? (1.0 / max(count($modalities), 1));
-            }
-        }
-
-        $oldPrototypes = $this->state['prototypes'] ?? [];
-        $finalPrototypes = [];
-        foreach ($prototypes as $label => $vectors) {
-            $mean = Vector::average($vectors);
-            if (isset($oldPrototypes[$label])) {
-                $finalPrototypes[$label] = $this->elasticCombine($oldPrototypes[$label], $mean, $ewcLambda);
-            } else {
-                $finalPrototypes[$label] = $mean;
-            }
-        }
-
-        $timestamp = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
-        $this->state['trained_at'] = $timestamp;
-        $this->state['prototypes'] = $finalPrototypes;
-        $this->state['alpha'] = $alpha;
-        $this->trainDeepNetwork($featureVectors, $labelSequence, $labelIndex, $sampleCount);
-
-        $trainAccuracy = $this->evaluate($trainSet);
-        $testAccuracy = $testSet === [] ? $trainAccuracy : $this->evaluate($testSet);
-
-        $metrics = [
-            'train_accuracy' => $trainAccuracy,
-            'test_accuracy' => $testAccuracy,
-            'trained_at' => $timestamp,
-            'sample_count' => $sampleCount,
-        ];
+        $metrics = $this->runTrainingPipeline($dataset, $trainRatio, $ewcLambda);
         $this->state['metrics'] = $metrics;
+        $this->storage->save($this->state);
 
+        return $metrics;
+    }
+
+    /**
+     * Blend a base dataset with an adaptation dataset for continual learning.
+     *
+     * @param array<int, array{label: string, modalities: array<string, mixed>}> $baseDataset
+     * @param array<int, array{label: string, modalities: array<string, mixed>}> $adaptDataset
+     * @return array{
+     *     train_accuracy: float,
+     *     test_accuracy: float,
+     *     trained_at: string,
+     *     sample_count: int,
+     *     mode: string,
+     *     carryover_samples: int,
+     *     base_retention: float|null,
+     *     adapt_performance: float|null
+     * }
+     */
+    public function transferLearn(
+        array $baseDataset,
+        array $adaptDataset,
+        float $carryoverRatio = 0.3,
+        float $trainRatio = 0.8,
+        float $ewcLambda = 0.2
+    ): array {
+        if ($baseDataset === [] && $adaptDataset === []) {
+            throw new \InvalidArgumentException('Provide at least one dataset for transfer learning.');
+        }
+
+        $carryoverRatio = max(0.0, min(1.0, $carryoverRatio));
+        $carryoverSamples = 0;
+        $workingDataset = $adaptDataset;
+        if ($baseDataset !== [] && $carryoverRatio > 0.0) {
+            $carryoverSamples = max(1, (int) floor(count($baseDataset) * $carryoverRatio));
+            $baseCopy = $baseDataset;
+            shuffle($baseCopy);
+            $workingDataset = array_merge(
+                $workingDataset,
+                array_slice($baseCopy, 0, min($carryoverSamples, count($baseCopy)))
+            );
+        }
+
+        if ($workingDataset === []) {
+            $workingDataset = $baseDataset;
+            $carryoverSamples = count($baseDataset);
+        }
+
+        $metrics = $this->runTrainingPipeline($workingDataset, $trainRatio, $ewcLambda);
+        $metrics['mode'] = 'transfer';
+        $metrics['carryover_samples'] = $carryoverSamples;
+        $metrics['base_retention'] = $baseDataset === [] ? null : $this->evaluate($baseDataset);
+        $metrics['adapt_performance'] = $adaptDataset === [] ? null : $this->evaluate($adaptDataset);
+        $this->state['metrics'] = $metrics;
         $this->storage->save($this->state);
 
         return $metrics;
@@ -474,6 +449,95 @@ final class NSCTXModel
         }
 
         return $targets;
+    }
+
+    /**
+     * @param array<int, array{label: string, modalities: array<string, mixed>}> $dataset
+     * @return array{train_accuracy: float, test_accuracy: float, trained_at: string, sample_count: int}
+     */
+    private function runTrainingPipeline(array $dataset, float $trainRatio, float $ewcLambda): array
+    {
+        $sampleCount = count($dataset);
+        $trainCount = max(1, (int) floor($sampleCount * $trainRatio));
+        $trainSet = array_slice($dataset, 0, $trainCount);
+        $testSet = array_slice($dataset, $trainCount);
+
+        $preparedTexts = array_map(function (array $item): array {
+            $modalities = $item['modalities'] ?? [];
+            return $this->prepareConversationInput($modalities['text'] ?? '');
+        }, $trainSet);
+
+        $this->textEncoder->fit(array_map(
+            static fn (array $prepared): string => $prepared['summary'],
+            $preparedTexts
+        ));
+        $this->state['vocabulary'] = $this->textEncoder->getVocabulary();
+
+        $speakerProfiles = $this->state['speaker_profiles'] ?? [];
+        foreach ($preparedTexts as $prepared) {
+            foreach ($prepared['speakers'] as $role => $count) {
+                $speakerProfiles[$role] = ($speakerProfiles[$role] ?? 0) + $count;
+            }
+        }
+        $this->state['speaker_profiles'] = $speakerProfiles;
+
+        $prototypes = [];
+        $alphaAccumulator = [];
+        $featureVectors = [];
+        $labelSequence = [];
+        foreach ($trainSet as $sample) {
+            $encoded = $this->encodeModalities($sample['modalities']);
+            $label = $sample['label'];
+            $prototypes[$label][] = $encoded['hub_state'];
+            $featureVectors[] = $encoded['hub_state'];
+            $labelSequence[] = $label;
+            foreach ($encoded['modal_weights'] as $name => $weight) {
+                $alphaAccumulator[$name] = ($alphaAccumulator[$name] ?? 0.0) + $weight;
+            }
+        }
+
+        $labelIndex = $this->buildLabelIndex($labelSequence);
+        $this->state['label_index'] = $labelIndex;
+
+        $alpha = [];
+        $modalities = array_keys($alphaAccumulator);
+        if ($modalities !== []) {
+            $counts = [];
+            foreach ($modalities as $name) {
+                $counts[] = $alphaAccumulator[$name];
+            }
+            $normalized = Math::softmax($counts);
+            foreach ($modalities as $index => $name) {
+                $alpha[$name] = $normalized[$index] ?? (1.0 / max(count($modalities), 1));
+            }
+        }
+
+        $oldPrototypes = $this->state['prototypes'] ?? [];
+        $finalPrototypes = [];
+        foreach ($prototypes as $label => $vectors) {
+            $mean = Vector::average($vectors);
+            if (isset($oldPrototypes[$label])) {
+                $finalPrototypes[$label] = $this->elasticCombine($oldPrototypes[$label], $mean, $ewcLambda);
+            } else {
+                $finalPrototypes[$label] = $mean;
+            }
+        }
+
+        $timestamp = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
+        $this->state['trained_at'] = $timestamp;
+        $this->state['prototypes'] = $finalPrototypes;
+        $this->state['alpha'] = $alpha;
+        $this->trainDeepNetwork($featureVectors, $labelSequence, $labelIndex, $sampleCount);
+
+        $trainAccuracy = $this->evaluate($trainSet);
+        $testAccuracy = $testSet === [] ? $trainAccuracy : $this->evaluate($testSet);
+
+        return [
+            'train_accuracy' => $trainAccuracy,
+            'test_accuracy' => $testAccuracy,
+            'trained_at' => $timestamp,
+            'sample_count' => $sampleCount,
+        ];
     }
 
     /**

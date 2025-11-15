@@ -33,6 +33,30 @@ function nsctxDisplayRole(string $role): string
     return ucfirst($role);
 }
 
+/**
+ * @return array<int, array{label: string, modalities: array<string, mixed>}>
+ */
+function nsctxLoadDatasetSamples(string $path): array
+{
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $raw = file_get_contents($path);
+    if ($raw === false) {
+        return [];
+    }
+
+    try {
+        $decoded = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+    } catch (Throwable $exception) {
+        return [];
+    }
+
+    $samples = $decoded['samples'] ?? [];
+    return is_array($samples) ? $samples : [];
+}
+
 $storage = new Storage(__DIR__ . '/storage/model.json');
 $model = new NSCTXModel($storage);
 
@@ -46,6 +70,7 @@ $error = null;
 $chatResult = null;
 $latestMemory = null;
 $chatInput = '';
+$trainingMetrics = $model->getLastMetrics();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -78,12 +103,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chatHistory = nsctxDefaultChatHistory();
             $_SESSION['chat_history'] = $chatHistory;
             $message = 'Conversation reset.';
+        } elseif ($action === 'self_learn') {
+            $baseSamples = nsctxLoadDatasetSamples(__DIR__ . '/data/dataset.json');
+            $adaptSamples = nsctxLoadDatasetSamples(__DIR__ . '/data/adaptation.json');
+            if ($baseSamples === [] && $adaptSamples === []) {
+                throw new InvalidArgumentException('No dataset samples available for transfer learning.');
+            }
+            $trainingMetrics = $model->transferLearn($baseSamples, $adaptSamples, 0.35);
+            $message = 'Self-learning transfer complete.';
         } else {
             $error = 'Unknown action.';
         }
     } catch (Throwable $exception) {
         $error = $exception->getMessage();
     }
+
+    $trainingMetrics = $model->getLastMetrics();
 }
 
 $memoryBank = $model->getMemoryBank();
@@ -346,6 +381,37 @@ $memoryBank = $model->getMemoryBank();
             <?php endif; ?>
         </section>
     </div>
+
+    <section class="panel" style="margin-top: 1.5rem;">
+        <h2>Self-learning transfer</h2>
+        <p>The NSCTX model can rehearse the base mission dataset while adapting to a new scenario. Triggering self-learning
+            mixes the original samples with fresh adaptation data, runs continual training, and reports how well prior skills
+            were retained.</p>
+        <?php if ($trainingMetrics !== null): ?>
+            <ul style="list-style: none; padding: 0; margin: 1rem 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem;">
+                <li><strong>Mode:</strong> <?php echo htmlspecialchars($trainingMetrics['mode'] ?? 'standard', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></li>
+                <li><strong>Samples:</strong> <?php echo (int) ($trainingMetrics['sample_count'] ?? 0); ?></li>
+                <li><strong>Train accuracy:</strong> <?php echo number_format(($trainingMetrics['train_accuracy'] ?? 0.0) * 100, 2); ?>%</li>
+                <li><strong>Test accuracy:</strong> <?php echo number_format(($trainingMetrics['test_accuracy'] ?? 0.0) * 100, 2); ?>%</li>
+                <?php if (isset($trainingMetrics['base_retention'])): ?>
+                    <li><strong>Base retention:</strong> <?php echo $trainingMetrics['base_retention'] === null ? 'n/a' : number_format($trainingMetrics['base_retention'] * 100, 2) . '%'; ?></li>
+                <?php endif; ?>
+                <?php if (isset($trainingMetrics['adapt_performance'])): ?>
+                    <li><strong>Adaptation:</strong> <?php echo $trainingMetrics['adapt_performance'] === null ? 'n/a' : number_format($trainingMetrics['adapt_performance'] * 100, 2) . '%'; ?></li>
+                <?php endif; ?>
+                <?php if (isset($trainingMetrics['carryover_samples'])): ?>
+                    <li><strong>Carryover samples:</strong> <?php echo (int) $trainingMetrics['carryover_samples']; ?></li>
+                <?php endif; ?>
+                <li><strong>Updated:</strong> <?php echo htmlspecialchars((string) ($trainingMetrics['trained_at'] ?? 'n/a'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></li>
+            </ul>
+        <?php else: ?>
+            <p>No training run recorded yet. Use the button below to perform the first self-learning pass.</p>
+        <?php endif; ?>
+        <form method="post" style="margin-top: 1rem;">
+            <input type="hidden" name="action" value="self_learn">
+            <button type="submit">Run self-learning transfer</button>
+        </form>
+    </section>
 </div>
 </body>
 </html>
