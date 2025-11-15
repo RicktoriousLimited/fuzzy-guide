@@ -26,51 +26,6 @@ final class IndexTest extends TestCase
         });
     }
 
-    public function testTrainingFlowDisplaysSuccessMessage(): void
-    {
-        $config = [
-            'method' => 'POST',
-            'post' => [
-                'action' => 'train',
-                'train_ratio' => '0.5',
-                'ewc' => '0.1',
-            ],
-            'output' => $this->createTempFilePath(),
-        ];
-
-        $this->runIndex($config);
-
-        $output = file_get_contents($config['output']);
-        $this->assertStringContainsString('Training complete', $output ?: '');
-    }
-
-    public function testPredictionFlowDisplaysConversationSummary(): void
-    {
-        $this->trainModelFixture();
-
-        $conversation = implode("\n", [
-            'User: Hello assistant',
-            'Assistant: Hello user, how can I help?',
-        ]);
-
-        $config = [
-            'method' => 'POST',
-            'post' => [
-                'action' => 'predict',
-                'text' => $conversation,
-                'image' => '0.1,0.2,0.3',
-                'audio' => '0.05,0.15,0.2',
-            ],
-            'output' => $this->createTempFilePath(),
-        ];
-
-        $this->runIndex($config);
-
-        $output = file_get_contents($config['output']);
-        $this->assertStringContainsString('Prediction generated.', $output ?: '');
-        $this->assertStringContainsString('Conversation summary', $output ?: '');
-    }
-
     public function testTeachActionPersistsMemory(): void
     {
         $config = [
@@ -84,11 +39,11 @@ final class IndexTest extends TestCase
 
         $this->runIndex($config);
         $output = file_get_contents($config['output']);
-        $this->assertStringContainsString('Passage learned', $output ?: '');
+        $this->assertStringContainsString('New passage stored in memory.', $output ?: '');
         $this->assertStringContainsString('Memory bank', $output ?: '');
     }
 
-    public function testChatActionProducesResponseFromMemory(): void
+    public function testChatActionDisplaysLatestReplyPanel(): void
     {
         // teach the chatbot first so memory exists
         $teachConfig = [
@@ -105,25 +60,32 @@ final class IndexTest extends TestCase
             'method' => 'POST',
             'post' => [
                 'action' => 'chat',
-                'chat_text' => 'user: remind me what the observatory saw',
+                'message' => 'Remind me what the observatory saw.',
             ],
             'output' => $this->createTempFilePath(),
         ];
 
         $this->runIndex($chatConfig);
         $output = file_get_contents($chatConfig['output']);
-        $this->assertStringContainsString('Chat response', $output ?: '');
+        $this->assertStringContainsString('Assistant replied.', $output ?: '');
+        $this->assertStringContainsString('Latest reply', $output ?: '');
         $this->assertStringContainsString('Matched memory', $output ?: '');
     }
 
-    private function trainModelFixture(): void
+    public function testResetActionShowsConfirmation(): void
     {
-        $storage = new Storage($this->storagePath);
-        $model = new NSCTXModel($storage);
-        $datasetPath = __DIR__ . '/../../php-app/data/dataset.json';
-        $payload = json_decode(file_get_contents($datasetPath) ?: 'null', true);
-        $samples = $payload['samples'] ?? [];
-        $model->train($samples, 0.6, 0.1);
+        $config = [
+            'method' => 'POST',
+            'post' => [
+                'action' => 'reset_chat',
+            ],
+            'output' => $this->createTempFilePath(),
+        ];
+
+        $this->runIndex($config);
+        $output = file_get_contents($config['output']);
+        $this->assertStringContainsString('Conversation reset.', $output ?: '');
+        $this->assertStringContainsString('You are the NSCTX memory assistant', $output ?: '');
     }
 
     /**

@@ -36,11 +36,12 @@ The prediction command prints a three-dimensional probability vector along with 
 
 The repository now includes a full PHP port of the NSCTX demo. The PHP stack mirrors the mathematical specification and exposes both a browser interface and CLI utilities for training, testing, and reasoning inspection.
 
-Alongside the classifier playground you can now convert NSCTX into a lightweight chatbot:
+The browser interface now focuses on a **mini ChatGPT** experience powered by the NSCTX memory module:
 
-- **Teach** the model new passages without labels through the "Teach the chatbot" form. Each passage is embedded and stored in a retrieval memory bank.
-- **Chat** by providing multi-turn dialogue. The chatbot embeds the conversation, retrieves the most similar learned passage, and produces a grounded response with the similarity score.
-- Inspect the current memory entries from the "Memory bank" panel to verify what the assistant has absorbed.
+- **Teach** the assistant new passages through the "Teach the assistant" panel. Each passage is summarized, embedded, and dropped into a retrieval memory bank.
+- **Chat** inside a conversational surface that looks like ChatGPT. Messages are appended to the live history (stored in the session) and routed through the NSCTX chat endpoint to retrieve supporting memories.
+- **Inspect** the "Memory bank" list to confirm what context is available and view the latest reply section to understand which memory was matched.
+- **Reset** the conversation when you want to start fresh—the UI keeps the unsupervised memory but clears the live chat log.
 
 Start the development server from the repository root:
 
@@ -48,7 +49,7 @@ Start the development server from the repository root:
 php -S localhost:8080 -t php-app
 ```
 
-Then visit <http://localhost:8080> to interact with the playground. The UI lets you launch EWC-regularized training on the bundled multi-modal dataset, inspect prototype vectors, and run predictions with reasoning traces.
+Then visit <http://localhost:8080> to interact with the mini ChatGPT. Teach a few passages, refresh the chat, and inspect which memories were retrieved for each reply.
 
 Run the PHP training pipeline from the command line:
 
