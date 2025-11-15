@@ -9,7 +9,10 @@
     "autoload": {
         "psr-4": {
             "NSCTX\\": "php-app/src/NSCTX/"
-        }
+        },
+        "classmap": [
+            "vendor/phpunit/framework"
+        ]
     },
     "minimum-stability": "stable",
     "prefer-stable": true

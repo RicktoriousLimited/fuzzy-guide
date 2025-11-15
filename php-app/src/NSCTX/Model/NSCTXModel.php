@@ -43,6 +43,7 @@ final class NSCTXModel
     private SemanticGraphBuilder $graphBuilder;
     private ReasoningEngine $reasoner;
     private HubDecoder $decoder;
+    private DeepNeuralNetwork $network;
 
     /**
      * @var array<string, mixed>
@@ -61,6 +62,8 @@ final class NSCTXModel
         $this->graphBuilder = new SemanticGraphBuilder();
         $this->reasoner = new ReasoningEngine();
         $this->decoder = new HubDecoder();
+        $networkState = is_array($saved['neural_network'] ?? null) ? $saved['neural_network'] : null;
+        $this->network = new DeepNeuralNetwork($networkState);
         $this->state = $saved + [
             'trained_at' => null,
             'prototypes' => [],
@@ -69,6 +72,8 @@ final class NSCTXModel
             'vocabulary' => $vocabulary,
             'speaker_profiles' => $saved['speaker_profiles'] ?? [],
             'memory_bank' => $saved['memory_bank'] ?? [],
+            'neural_network' => $networkState ?? $this->network->toArray(),
+            'label_index' => $saved['label_index'] ?? [],
         ];
     }
 
@@ -192,14 +197,21 @@ final class NSCTXModel
 
         $prototypes = [];
         $alphaAccumulator = [];
+        $featureVectors = [];
+        $labelSequence = [];
         foreach ($trainSet as $sample) {
             $encoded = $this->encodeModalities($sample['modalities']);
             $label = $sample['label'];
             $prototypes[$label][] = $encoded['hub_state'];
+            $featureVectors[] = $encoded['hub_state'];
+            $labelSequence[] = $label;
             foreach ($encoded['modal_weights'] as $name => $weight) {
                 $alphaAccumulator[$name] = ($alphaAccumulator[$name] ?? 0.0) + $weight;
             }
         }
+
+        $labelIndex = $this->buildLabelIndex($labelSequence);
+        $this->state['label_index'] = $labelIndex;
 
         $alpha = [];
         $modalities = array_keys($alphaAccumulator);
@@ -229,6 +241,7 @@ final class NSCTXModel
         $this->state['trained_at'] = $timestamp;
         $this->state['prototypes'] = $finalPrototypes;
         $this->state['alpha'] = $alpha;
+        $this->trainDeepNetwork($featureVectors, $labelSequence, $labelIndex, $sampleCount);
 
         $trainAccuracy = $this->evaluate($trainSet);
         $testAccuracy = $testSet === [] ? $trainAccuracy : $this->evaluate($testSet);
@@ -258,13 +271,43 @@ final class NSCTXModel
     public function predict(array $modalities): array
     {
         $encoded = $this->encodeModalities($modalities, $this->state['alpha'] ?? []);
-        $decoded = $this->decoder->decode($encoded['hub_state'], $this->state['prototypes'] ?? []);
+        $probabilityMap = $this->classifyHubState($encoded['hub_state']);
+        $prediction = array_key_first($probabilityMap) ?? 'unknown';
         return [
-            'prediction' => $decoded['prediction'],
-            'probabilities' => $decoded['probabilities'],
+            'prediction' => $prediction,
+            'probabilities' => $probabilityMap,
             'intermediates' => $encoded['intermediates'],
             'modal_weights' => $encoded['modal_weights'],
         ];
+    }
+
+    /**
+     * @return array<string, float>
+     */
+    private function classifyHubState(array $hubState): array
+    {
+        if ($hubState === []) {
+            return ['unknown' => 1.0];
+        }
+
+        $labelIndex = $this->state['label_index'] ?? [];
+        if ($this->network->isReady() && $labelIndex !== []) {
+            $probabilities = $this->network->predict($hubState);
+            $map = [];
+            foreach ($labelIndex as $label => $index) {
+                $map[$label] = $probabilities[$index] ?? 0.0;
+            }
+            arsort($map);
+            return $map;
+        }
+
+        $decoded = $this->decoder->decode($hubState, $this->state['prototypes'] ?? []);
+        $probabilities = $decoded['probabilities'];
+        if ($probabilities === []) {
+            return ['unknown' => 1.0];
+        }
+
+        return $probabilities;
     }
 
     /**
@@ -339,8 +382,8 @@ final class NSCTXModel
         $audio = array_map('floatval', $modalities['audio'] ?? []);
 
         $textEncoded = $this->textEncoder->encode($text, $textData['hints']);
-        $imageEncoded = $image === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->imageEncoder->encode($image);
-        $audioEncoded = $audio === [] ? Vector::zeros($this->getEmbeddingDim()) : $this->audioEncoder->encode($audio);
+        $imageEncoded = $image === [] ? Vector::zeros($this->imageEncoder->getDimension()) : $this->imageEncoder->encode($image);
+        $audioEncoded = $audio === [] ? Vector::zeros($this->audioEncoder->getDimension()) : $this->audioEncoder->encode($audio);
 
         $modalVectors = [
             'text' => $textEncoded['contextual'],
@@ -367,6 +410,70 @@ final class NSCTXModel
                 'hub' => $hubState,
             ],
         ];
+    }
+
+    /**
+     * @param array<int, array<int, float>> $features
+     * @param array<int, string> $labels
+     * @param array<string, int> $labelIndex
+     */
+    private function trainDeepNetwork(array $features, array $labels, array $labelIndex, int $sampleCount): void
+    {
+        $featureDim = count($features[0] ?? []);
+        if ($featureDim === 0 || $labelIndex === []) {
+            return;
+        }
+
+        $hiddenDim = max(8, (int) ceil($featureDim * 1.5));
+        $targets = $this->buildOneHotTargets($labels, $labelIndex);
+        $this->network->initialize($featureDim, count($labelIndex), $hiddenDim, 2, true);
+        $epochs = max(30, $sampleCount * 4);
+        $this->network->train($features, $targets, $epochs);
+        $this->state['neural_network'] = $this->network->toArray();
+    }
+
+    /**
+     * @param array<int, string> $labels
+     * @return array<string, int>
+     */
+    private function buildLabelIndex(array $labels): array
+    {
+        if ($labels === []) {
+            return $this->state['label_index'] ?? [];
+        }
+
+        $unique = array_values(array_unique($labels));
+        sort($unique, SORT_STRING);
+        $index = [];
+        foreach ($unique as $position => $label) {
+            $index[$label] = $position;
+        }
+
+        return $index;
+    }
+
+    /**
+     * @param array<int, string> $labels
+     * @param array<string, int> $labelIndex
+     * @return array<int, array<int, float>>
+     */
+    private function buildOneHotTargets(array $labels, array $labelIndex): array
+    {
+        $count = count($labelIndex);
+        if ($count === 0) {
+            return [];
+        }
+
+        $targets = [];
+        foreach ($labels as $label) {
+            $vector = array_fill(0, $count, 0.0);
+            if (isset($labelIndex[$label])) {
+                $vector[$labelIndex[$label]] = 1.0;
+            }
+            $targets[] = $vector;
+        }
+
+        return $targets;
     }
 
     /**
@@ -456,7 +563,7 @@ final class NSCTXModel
 
     private function getEmbeddingDim(): int
     {
-        return count($this->state['prototypes'][array_key_first($this->state['prototypes'])] ?? []) ?: 16;
+        return $this->textEncoder->getDimension();
     }
 
     /**

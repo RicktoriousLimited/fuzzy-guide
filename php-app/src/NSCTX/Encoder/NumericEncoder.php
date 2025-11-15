@@ -18,6 +18,11 @@ final class NumericEncoder
         $this->modality = $modality;
     }
 
+    public function getDimension(): int
+    {
+        return $this->dimension;
+    }
+
     /**
      * @param array<int, float> $values
      * @return array<int, float>

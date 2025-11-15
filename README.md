@@ -43,6 +43,8 @@ The browser interface now focuses on a **mini ChatGPT** experience powered by th
 - **Inspect** the "Memory bank" list to confirm what context is available and view the latest reply section to understand which memory was matched.
 - **Reset** the conversation when you want to start fresh—the UI keeps the unsupervised memory but clears the live chat log.
 
+Under the hood the PHP NSCTX model now optimizes a deep neural network (a small multi-layer perceptron) on top of the fused hub state instead of relying solely on prototype cosine similarity. This brings the PHP playground closer to the architecture described in `Main.txt` and yields smoother probability estimates.
+
 Start the development server from the repository root:
 
 ```bash
