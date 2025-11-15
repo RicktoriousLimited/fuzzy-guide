@@ -41,8 +41,26 @@ final class ChatbotLearningTest extends TestCase
             ['role' => 'user', 'content' => 'Remind me what the observatory spotted.'],
         ]);
 
-        $this->assertStringContainsString('prior knowledge', strtolower($chat['response']));
+        $response = strtolower($chat['response']);
+        $this->assertStringContainsString('you are asking', $response);
+        $this->assertStringContainsString('archived', $response);
+        $this->assertStringContainsString('confidence', $response);
         $this->assertGreaterThan(0.0, $chat['match_score']);
         $this->assertNotSame(null, $chat['memory']);
+    }
+
+    public function testChatProvidesInterpretationWithoutMemory(): void
+    {
+        $model = new NSCTXModel(new Storage($this->storagePath));
+
+        $chat = $model->chat([
+            ['role' => 'user', 'content' => 'Can you help me plan my next rover checkup?'],
+        ]);
+
+        $response = strtolower($chat['response']);
+        $this->assertStringContainsString('do not have a saved note', $response);
+        $this->assertStringContainsString('tell me more', $response);
+        $this->assertSame(0.0, $chat['match_score']);
+        $this->assertSame(null, $chat['memory']);
     }
 }
