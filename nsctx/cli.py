@@ -12,45 +12,10 @@ from . import Evaluator, NSCTXModel, Trainer
 from .data import build_demo_dataset, conversation_to_text, encode_text
 from .model import NSCTXConfig
 from .training import TrainingConfig
+from .vocab import VOCAB
 
 
 ConversationArg = Sequence[Tuple[str, str]]
-
-
-VOCAB: List[str] = [
-    "<pad>",
-    "<unk>",
-    "<user>",
-    "<assistant>",
-    "the",
-    "boy",
-    "kicked",
-    "ball",
-    "apologized",
-    "man",
-    "was",
-    "angry",
-    "phone",
-    "broken",
-    "what",
-    "happened",
-    "in",
-    "game",
-    "did",
-    "play",
-    "again",
-    "why",
-    "everyone",
-    "quiet",
-    "say",
-    "sorry",
-    "to",
-    "his",
-    "friend",
-    "made",
-    "upset",
-    "work",
-]
 
 
 def _parse_conversation(raw: str | None) -> ConversationArg | None:
