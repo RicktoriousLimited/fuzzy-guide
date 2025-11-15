@@ -72,7 +72,7 @@ class ConversationChatbot:
         probs = self.evaluator.predict(tokens).squeeze(0)
         embedding = self._embed_text(text)
         memory, score = self._retrieve_memory(embedding)
-        response = self._compose_response(memory, score, probs)
+        response = self._compose_response(normalized, memory, score, probs)
         return {
             "response": response,
             "probabilities": probs.tolist(),
@@ -119,16 +119,47 @@ class ConversationChatbot:
             return None, 0.0
         return best_entry, best_score
 
-    def _compose_response(self, memory: MemoryEntry | None, score: float, probs: torch.Tensor) -> str:
-        formatted_probs = ", ".join(f"{value:.2f}" for value in probs.tolist())
+    def _compose_response(
+        self,
+        conversation: Sequence[ConversationMessage],
+        memory: MemoryEntry | None,
+        score: float,
+        probs: torch.Tensor,
+    ) -> str:
+        intent_line = self._describe_user_intent(conversation)
+        reasoning_line = self._describe_probabilities(probs)
         if memory is not None:
-            return (
-                f"I recall a similar situation (match {score:.2f}): '{memory.text}'. "
-                f"My reasoning probabilities are [{formatted_probs}]."
-            )
+            memory_line = self._describe_memory_reference(memory, score)
+            return " ".join(part for part in [intent_line, memory_line, reasoning_line] if part).strip()
+        exploration_line = (
+            "I do not have a closely matching archive entry yet, so I am reasoning directly from the transformer context."
+        )
+        return " ".join(part for part in [intent_line, exploration_line, reasoning_line] if part).strip()
+
+    def _describe_user_intent(self, conversation: Sequence[ConversationMessage]) -> str:
+        for role, content in reversed(conversation):
+            if role == "user" and content:
+                return f"You are focusing on: '{content}'."
+        # Fallback to the final turn if no explicit user turn was found (e.g. user text only)
+        last_turn = conversation[-1]
+        return f"Let's continue thinking about: '{last_turn[1]}'."
+
+    def _describe_memory_reference(self, memory: MemoryEntry, score: float) -> str:
+        preview = memory.text.strip()
+        if len(preview) > 120:
+            preview = preview[:117].rstrip() + "..."
+        return f"I recall a related memory (match {score:.2f}): '{preview}'."
+
+    def _describe_probabilities(self, probs: torch.Tensor) -> str:
+        values = probs.tolist()
+        formatted_probs = ", ".join(f"{value:.2f}" for value in values)
+        if not values:
+            return ""
+        top_idx = int(torch.tensor(values).argmax().item())
+        top_conf = values[top_idx]
         return (
-            "I do not have a close memory yet, but I'm reasoning from the transformer context. "
-            f"Current probabilities are [{formatted_probs}]."
+            "My current reasoning leans toward hypothesis "
+            f"{top_idx + 1} with confidence {top_conf:.2f} (distribution [{formatted_probs}])."
         )
 
     def _serialise_memory(self, memory: MemoryEntry | None) -> Dict[str, object] | None:
