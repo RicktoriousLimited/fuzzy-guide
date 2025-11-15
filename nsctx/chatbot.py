@@ -1,0 +1,143 @@
+"""Conversation-friendly transformer chatbot built on NSCTX."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+import torch
+import torch.nn.functional as F
+
+from .data import ConversationMessage, InMemoryDataset, build_demo_dataset, conversation_to_text, encode_text
+from .evaluation import Evaluator
+from .model import NSCTXConfig, NSCTXModel
+from .training import Trainer, TrainingConfig
+from .vocab import VOCAB
+
+
+@dataclass
+class MemoryEntry:
+    """Container for a learned conversation snippet."""
+
+    messages: List[ConversationMessage]
+    text: str
+    embedding: torch.Tensor
+
+
+class ConversationChatbot:
+    """High-level helper that turns the NSCTX model into a chatbot."""
+
+    def __init__(self, vocab: Iterable[str] | None = None, device: str = "cpu"):
+        self.vocab = list(vocab or VOCAB)
+        if "<unk>" not in self.vocab:
+            raise ValueError("Vocabulary must contain a <unk> token for unseen words.")
+        self.vocab_to_idx = {token: i for i, token in enumerate(self.vocab)}
+        config = NSCTXConfig(vocab_size=len(self.vocab))
+        self.device = device
+        self.model = NSCTXModel(config).to(device)
+        self.evaluator = Evaluator(self.model, device=device)
+        self.memory: List[MemoryEntry] = []
+
+    def train_on_dataset(self, dataset: InMemoryDataset | None = None, epochs: int = 20) -> Dict[str, float]:
+        """Train (or fine-tune) the underlying transformer on a dataset."""
+
+        dataset = dataset or build_demo_dataset(self.vocab)
+        trainer = Trainer(self.model, TrainingConfig(epochs=epochs, device=self.device))
+        return trainer.fit(dataset)
+
+    # ------------------------------------------------------------------
+    # Memory handling
+    # ------------------------------------------------------------------
+    def learn(self, conversation: Sequence[ConversationMessage] | str) -> Dict[str, object]:
+        """Store a conversation in memory for later retrieval."""
+
+        normalized = self._normalise_conversation(conversation)
+        text = conversation_to_text(normalized)
+        embedding = self._embed_text(text)
+        entry = MemoryEntry(messages=normalized, text=text, embedding=embedding)
+        self.memory.append(entry)
+        return {
+            "text": text,
+            "messages": normalized,
+        }
+
+    # ------------------------------------------------------------------
+    # Chatting
+    # ------------------------------------------------------------------
+    def respond(self, conversation: Sequence[ConversationMessage] | str) -> Dict[str, object]:
+        """Generate a response and expose reasoning artefacts."""
+
+        normalized = self._normalise_conversation(conversation)
+        text = conversation_to_text(normalized)
+        tokens = encode_text(text, self.vocab_to_idx).unsqueeze(0)
+        probs = self.evaluator.predict(tokens).squeeze(0)
+        embedding = self._embed_text(text)
+        memory, score = self._retrieve_memory(embedding)
+        response = self._compose_response(memory, score, probs)
+        return {
+            "response": response,
+            "probabilities": probs.tolist(),
+            "memory": self._serialise_memory(memory),
+            "match_score": score,
+            "summary": text,
+        }
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _normalise_conversation(self, conversation: Sequence[ConversationMessage] | str) -> List[ConversationMessage]:
+        if isinstance(conversation, str):
+            return [("user", conversation.strip())]
+        normalised: List[ConversationMessage] = []
+        for role, content in conversation:
+            role_clean = role.strip().lower() or "user"
+            content_clean = content.strip()
+            if content_clean:
+                normalised.append((role_clean, content_clean))
+        if not normalised:
+            raise ValueError("Conversation must contain at least one non-empty turn.")
+        return normalised
+
+    def _embed_text(self, text: str) -> torch.Tensor:
+        tokens = encode_text(text, self.vocab_to_idx).unsqueeze(0).to(self.device)
+        mask = (tokens != 0).float()
+        with torch.no_grad():
+            projected, _ = self.model.encode_text(tokens, mask)
+            normalized = F.normalize(projected.squeeze(0), dim=0)
+            return normalized.cpu()
+
+    def _retrieve_memory(self, embedding: torch.Tensor) -> Tuple[MemoryEntry | None, float]:
+        best_entry: MemoryEntry | None = None
+        best_score = 0.0
+        if not self.memory:
+            return None, 0.0
+        for entry in self.memory:
+            score = F.cosine_similarity(entry.embedding.unsqueeze(0), embedding.unsqueeze(0)).item()
+            if best_entry is None or score > best_score:
+                best_entry = entry
+                best_score = score
+        if best_entry is None or best_score < 0.05:
+            return None, 0.0
+        return best_entry, best_score
+
+    def _compose_response(self, memory: MemoryEntry | None, score: float, probs: torch.Tensor) -> str:
+        formatted_probs = ", ".join(f"{value:.2f}" for value in probs.tolist())
+        if memory is not None:
+            return (
+                f"I recall a similar situation (match {score:.2f}): '{memory.text}'. "
+                f"My reasoning probabilities are [{formatted_probs}]."
+            )
+        return (
+            "I do not have a close memory yet, but I'm reasoning from the transformer context. "
+            f"Current probabilities are [{formatted_probs}]."
+        )
+
+    def _serialise_memory(self, memory: MemoryEntry | None) -> Dict[str, object] | None:
+        if memory is None:
+            return None
+        return {
+            "text": memory.text,
+            "messages": memory.messages,
+        }
+
+
+__all__ = ["ConversationChatbot"]

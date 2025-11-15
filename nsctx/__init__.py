@@ -1,7 +1,8 @@
 """NSCTX: Neuro-Symbolic Contextual Transformer eXperimental package."""
 
+from .chatbot import ConversationChatbot
+from .evaluation import Evaluator
 from .model import NSCTXModel
 from .training import Trainer
-from .evaluation import Evaluator
 
-__all__ = ["NSCTXModel", "Trainer", "Evaluator"]
+__all__ = ["NSCTXModel", "Trainer", "Evaluator", "ConversationChatbot"]
